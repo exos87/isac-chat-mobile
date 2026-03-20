@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,9 +48,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -93,6 +97,7 @@ fun ConversationRoute(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
     val attachmentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -137,8 +142,15 @@ fun ConversationRoute(
         viewModel.consumeDownloadedAttachment()
     }
 
+    LaunchedEffect(uiState.infoMessage) {
+        val message = uiState.infoMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message)
+        viewModel.consumeInfoMessage()
+    }
+
     ConversationScreen(
         uiState = uiState,
+        snackbarHostState = snackbarHostState,
         onBack = onBack,
         onRefresh = viewModel::refresh,
         onPaneSelected = viewModel::onPaneSelected,
@@ -170,6 +182,7 @@ fun ConversationRoute(
 @Composable
 fun ConversationScreen(
     uiState: ConversationUiState,
+    snackbarHostState: SnackbarHostState,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onPaneSelected: (ConversationPane) -> Unit,
@@ -198,8 +211,13 @@ fun ConversationScreen(
 ) {
     val bundle = uiState.bundle
     val panes = conversationPanes(bundle)
+    var confirmDeleteMessageId by remember { mutableStateOf<Long?>(null) }
+    var confirmDeleteAttachmentId by remember { mutableStateOf<Long?>(null) }
+    var confirmRemoveMember by remember { mutableStateOf<ConversationMember?>(null) }
+    var confirmLeaveConversation by remember { mutableStateOf(false) }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(
                 modifier = Modifier
@@ -313,8 +331,10 @@ fun ConversationScreen(
                     onRenameGroup = onRenameGroup,
                     onAddMember = onAddMember,
                     onUpdateRole = onUpdateRole,
-                    onRemoveMember = onRemoveMember,
-                    onLeaveConversation = onLeaveConversation
+                    onRemoveMember = { memberId ->
+                        confirmRemoveMember = bundle.conversation.members.firstOrNull { it.id == memberId }
+                    },
+                    onLeaveConversation = { confirmLeaveConversation = true }
                 )
             }
 
@@ -328,11 +348,63 @@ fun ConversationScreen(
                     bundle = bundle,
                     onApprovalMessageSelected = onApprovalMessageSelected,
                     onOpenAttachment = onOpenAttachment,
-                    onDeleteAttachment = onDeleteAttachment,
-                    onDeleteMessage = onDeleteMessage
+                    onDeleteAttachment = { attachmentId -> confirmDeleteAttachmentId = attachmentId },
+                    onDeleteMessage = { messageId -> confirmDeleteMessageId = messageId }
                 )
             }
         }
+    }
+
+    confirmDeleteMessageId?.let { messageId ->
+        ConfirmActionDialog(
+            title = "Zmazat spravu?",
+            text = "Sprava bude odstranena aj s naviazanymi prilohami.",
+            confirmLabel = "Zmazat",
+            onDismiss = { confirmDeleteMessageId = null },
+            onConfirm = {
+                confirmDeleteMessageId = null
+                onDeleteMessage(messageId)
+            }
+        )
+    }
+
+    confirmDeleteAttachmentId?.let { attachmentId ->
+        ConfirmActionDialog(
+            title = "Zmazat prilohu?",
+            text = "Priloha sa odstrani z tejto spravy pre vsetkych clenov konverzacie.",
+            confirmLabel = "Zmazat",
+            onDismiss = { confirmDeleteAttachmentId = null },
+            onConfirm = {
+                confirmDeleteAttachmentId = null
+                onDeleteAttachment(attachmentId)
+            }
+        )
+    }
+
+    confirmRemoveMember?.let { member ->
+        ConfirmActionDialog(
+            title = "Odobrat clena?",
+            text = "Pouzivatel ${member.displayName} bude odobrany zo skupiny.",
+            confirmLabel = "Odobrat",
+            onDismiss = { confirmRemoveMember = null },
+            onConfirm = {
+                confirmRemoveMember = null
+                onRemoveMember(member.id)
+            }
+        )
+    }
+
+    if (confirmLeaveConversation) {
+        ConfirmActionDialog(
+            title = "Opustit skupinu?",
+            text = "Po potvrdeni opustis konverzaciu. Ak si vlastnik, backend prideli noveho vlastnika.",
+            confirmLabel = "Opustit",
+            onDismiss = { confirmLeaveConversation = false },
+            onConfirm = {
+                confirmLeaveConversation = false
+                onLeaveConversation()
+            }
+        )
     }
 }
 
@@ -944,6 +1016,31 @@ private fun LeaveConversationCard(
             }
         }
     }
+}
+
+@Composable
+private fun ConfirmActionDialog(
+    title: String,
+    text: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Zrusit")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

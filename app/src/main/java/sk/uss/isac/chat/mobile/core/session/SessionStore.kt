@@ -48,12 +48,14 @@ class SessionStore(context: Context) {
         baseUrl: String,
         wsUrl: String,
         accessToken: String,
+        profileApiUrl: String = BuildConfig.PROFILE_API_URL,
         xApiType: String = BuildConfig.X_API_TYPE
     ) {
         appContext.sessionDataStore.edit { preferences ->
             preferences[Keys.BaseUrl] = baseUrl.trim().ensureTrailingSlash()
             preferences[Keys.WsUrl] = wsUrl.trim()
             preferences[Keys.AccessToken] = accessToken.trim()
+            preferences[Keys.ProfileApiUrl] = profileApiUrl.trim().ensureTrailingSlashIfPresent()
             preferences[Keys.XApiType] = xApiType.trim()
         }
     }
@@ -70,6 +72,7 @@ class SessionStore(context: Context) {
         val baseUrl = preferences[Keys.BaseUrl]?.trim().orEmpty().ifBlank { BuildConfig.CHAT_BASE_URL }
         val wsUrl = preferences[Keys.WsUrl]?.trim().orEmpty().ifBlank { BuildConfig.CHAT_WS_URL }
         val accessToken = preferences[Keys.AccessToken]?.trim().orEmpty()
+        val profileApiUrl = preferences[Keys.ProfileApiUrl]?.trim().orEmpty().ifBlank { BuildConfig.PROFILE_API_URL }
         val xApiType = preferences[Keys.XApiType]?.trim().orEmpty().ifBlank { BuildConfig.X_API_TYPE }
 
         if (accessToken.isBlank()) {
@@ -79,6 +82,7 @@ class SessionStore(context: Context) {
             baseUrl = baseUrl.ensureTrailingSlash(),
             wsUrl = wsUrl,
             accessToken = accessToken,
+            profileApiUrl = profileApiUrl.ensureTrailingSlashIfPresent(),
             xApiType = xApiType
         )
     }
@@ -87,9 +91,10 @@ class SessionStore(context: Context) {
         val BaseUrl = stringPreferencesKey("base_url")
         val WsUrl = stringPreferencesKey("ws_url")
         val AccessToken = stringPreferencesKey("access_token")
+        val ProfileApiUrl = stringPreferencesKey("profile_api_url")
         val XApiType = stringPreferencesKey("x_api_type")
     }
 }
 
 private fun String.ensureTrailingSlash(): String = if (endsWith("/")) this else "$this/"
-
+private fun String.ensureTrailingSlashIfPresent(): String = if (isBlank() || endsWith("/")) this else "$this/"

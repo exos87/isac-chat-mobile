@@ -36,6 +36,7 @@ data class ConversationUiState(
     val pendingAttachments: List<LocalAttachmentDraft> = emptyList(),
     val visibilityScope: VisibilityScope = VisibilityScope.ALL_MEMBERS,
     val error: String? = null,
+    val infoMessage: String? = null,
     val isSending: Boolean = false,
     val currentSubject: String? = null,
     val directoryUsers: List<DirectoryUser> = emptyList(),
@@ -214,6 +215,10 @@ class ConversationViewModel(
         _uiState.update { it.copy(downloadedAttachment = null, openingAttachmentId = null) }
     }
 
+    fun consumeInfoMessage() {
+        _uiState.update { it.copy(infoMessage = null) }
+    }
+
     fun sendMessage() {
         val snapshot = uiState.value
         if (snapshot.composerText.isBlank() && snapshot.pendingAttachments.isEmpty()) {
@@ -239,7 +244,12 @@ class ConversationViewModel(
                     it.copy(
                         composerText = "",
                         pendingAttachments = emptyList(),
-                        isSending = false
+                        isSending = false,
+                        infoMessage = if (snapshot.pendingAttachments.isNotEmpty()) {
+                            "Sprava aj prilohy boli odoslane."
+                        } else {
+                            "Sprava bola odoslana."
+                        }
                     )
                 }
                 refresh()
@@ -309,7 +319,12 @@ class ConversationViewModel(
             runCatching {
                 repository.renameConversation(conversationId, title)
             }.onSuccess {
-                _uiState.update { it.copy(isRenamingGroup = false) }
+                _uiState.update {
+                    it.copy(
+                        isRenamingGroup = false,
+                        infoMessage = "Skupina bola premenovana."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -337,7 +352,13 @@ class ConversationViewModel(
             runCatching {
                 repository.addConversationMembers(conversationId, listOf(subject))
             }.onSuccess {
-                _uiState.update { it.copy(isAddingGroupMember = false, selectedNewMemberSubject = "") }
+                _uiState.update {
+                    it.copy(
+                        isAddingGroupMember = false,
+                        selectedNewMemberSubject = "",
+                        infoMessage = "Clen bol pridany do skupiny."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -356,7 +377,12 @@ class ConversationViewModel(
             runCatching {
                 repository.updateConversationMemberRole(conversationId, memberId, role)
             }.onSuccess {
-                _uiState.update { it.copy(updatingMemberId = null) }
+                _uiState.update {
+                    it.copy(
+                        updatingMemberId = null,
+                        infoMessage = "Rola clena bola upravena."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -375,7 +401,12 @@ class ConversationViewModel(
             runCatching {
                 repository.removeConversationMember(conversationId, memberId)
             }.onSuccess {
-                _uiState.update { it.copy(removingMemberId = null) }
+                _uiState.update {
+                    it.copy(
+                        removingMemberId = null,
+                        infoMessage = "Clen bol odobrany zo skupiny."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -397,7 +428,8 @@ class ConversationViewModel(
                 _uiState.update {
                     it.copy(
                         isLeavingConversation = false,
-                        hasLeftConversation = true
+                        hasLeftConversation = true,
+                        infoMessage = "Skupinu si opustil."
                     )
                 }
             }.onFailure { error ->
@@ -417,7 +449,12 @@ class ConversationViewModel(
             runCatching {
                 repository.deleteMessage(messageId)
             }.onSuccess {
-                _uiState.update { it.copy(deletingMessageId = null) }
+                _uiState.update {
+                    it.copy(
+                        deletingMessageId = null,
+                        infoMessage = "Sprava bola zmazana."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -436,7 +473,12 @@ class ConversationViewModel(
             runCatching {
                 repository.deleteAttachment(attachmentId)
             }.onSuccess {
-                _uiState.update { it.copy(deletingAttachmentId = null) }
+                _uiState.update {
+                    it.copy(
+                        deletingAttachmentId = null,
+                        infoMessage = "Priloha bola zmazana."
+                    )
+                }
                 refresh()
             }.onFailure { error ->
                 _uiState.update {
@@ -477,6 +519,7 @@ class ConversationViewModel(
             runCatching {
                 repository.decideApproval(approvalCaseId, decisionCode)
             }.onSuccess {
+                _uiState.update { it.copy(infoMessage = "Schvalenie bolo odoslane.") }
                 refresh()
             }.onFailure { error ->
                 _uiState.update { it.copy(error = error.message ?: "Rozhodnutie sa nepodarilo odoslat.") }

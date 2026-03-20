@@ -20,7 +20,11 @@ interface ChatRepository {
     val session: StateFlow<UserSession?>
     val realtimeEvents: Flow<ChatRealtimeEvent>
 
-    suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, xApiType: String)
+    suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, profileApiUrl: String, xApiType: String)
+
+    suspend fun testSession(baseUrl: String, accessToken: String, xApiType: String): Int
+
+    suspend fun confirmMobileAppVerification(profileApiUrl: String, accessToken: String, xApiType: String)
 
     suspend fun clearSession()
 

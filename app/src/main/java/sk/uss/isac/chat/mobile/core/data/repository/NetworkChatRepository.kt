@@ -14,6 +14,7 @@ import okhttp3.MultipartBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.File
 import java.util.Base64
+import sk.uss.isac.chat.mobile.BuildConfig
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalCase
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalDecisionCode
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalStatus
@@ -54,8 +55,59 @@ class NetworkChatRepository(
     override val session = sessionStore.session
     override val realtimeEvents = realtimeClient.events
 
-    override suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, xApiType: String) {
-        sessionStore.saveSession(baseUrl, wsUrl, accessToken, xApiType)
+    override suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, profileApiUrl: String, xApiType: String) {
+        sessionStore.saveSession(baseUrl, wsUrl, accessToken, profileApiUrl, xApiType)
+    }
+
+    override suspend fun testSession(baseUrl: String, accessToken: String, xApiType: String): Int = withContext(Dispatchers.IO) {
+        val sanitizedBaseUrl = baseUrl.trim().let { if (it.endsWith("/")) it.dropLast(1) else it }
+        val request = Request.Builder()
+            .url("$sanitizedBaseUrl/chat/me/unread-count")
+            .header("Authorization", "Bearer ${accessToken.trim()}")
+            .header("X-Api-Type", xApiType.trim())
+            .get()
+            .build()
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Test spojenia zlyhal (${response.code}).")
+            }
+            val body = response.body?.string().orEmpty()
+            val match = Regex(""""unreadCount"\s*:\s*(\d+)""").find(body)
+            match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: error("Odpoved z testu spojenia nema ocakavany format.")
+        }
+    }
+
+    override suspend fun confirmMobileAppVerification(profileApiUrl: String, accessToken: String, xApiType: String) = withContext(Dispatchers.IO) {
+        val sanitizedProfileApiUrl = profileApiUrl.trim().trimEnd('/')
+        if (sanitizedProfileApiUrl.isBlank()) {
+            return@withContext
+        }
+        val requestBody = """
+            {
+              "modules": {
+                "mobileApp": {
+                  "platform": "ANDROID",
+                  "packageName": "${BuildConfig.APPLICATION_ID}",
+                  "versionName": "${BuildConfig.VERSION_NAME}",
+                  "status": "VERIFIED",
+                  "verifiedAt": "${java.time.OffsetDateTime.now()}",
+                  "lastSource": "mobile-app"
+                }
+              }
+            }
+        """.trimIndent().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val request = Request.Builder()
+            .url("$sanitizedProfileApiUrl/profile/preferences")
+            .header("Authorization", "Bearer ${accessToken.trim()}")
+            .header("X-Api-Type", xApiType.trim())
+            .patch(requestBody)
+            .build()
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Potvrdenie mobilnej aplikacie zlyhalo (${response.code}).")
+            }
+        }
     }
 
     override suspend fun clearSession() {

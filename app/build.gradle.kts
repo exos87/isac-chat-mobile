@@ -16,6 +16,7 @@ android {
 
         buildConfigField("String", "CHAT_BASE_URL", "\"http://10.0.2.2:9880/api/\"")
         buildConfigField("String", "CHAT_WS_URL", "\"ws://10.0.2.2:9880/api/ws/chat\"")
+        buildConfigField("String", "PROFILE_API_URL", "\"\"")
         buildConfigField("String", "X_API_TYPE", "\"private\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

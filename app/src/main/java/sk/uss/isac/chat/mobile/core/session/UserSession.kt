@@ -4,6 +4,6 @@ data class UserSession(
     val baseUrl: String,
     val wsUrl: String,
     val accessToken: String,
+    val profileApiUrl: String,
     val xApiType: String
 )
-
