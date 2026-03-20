@@ -1,0 +1,8 @@
+<resources>
+    <color name="isac_primary">#0F7C59</color>
+    <color name="isac_on_primary">#FFFFFF</color>
+    <color name="isac_secondary">#124B69</color>
+    <color name="isac_background">#F4F8F6</color>
+    <color name="isac_surface">#FFFFFF</color>
+    <color name="isac_error">#BA1A1A</color>
+</resources>
