@@ -12,3 +12,10 @@
 *.iml
 captures/
 .DS_Store
+*.jks
+*.keystore
+/keystore.properties
+/play-account*.json
+/play-credentials*.json
+/google-play-service-account*.json
+/app/src/*/google-services.json

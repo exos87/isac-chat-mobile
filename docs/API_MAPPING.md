@@ -23,7 +23,7 @@ Pouzite podla `isac-chat/README.md` a backend controllerov:
 - `POST /api/chat/approvals/{approvalCaseId}/decisions`
 - `GET /api/chat/directory/users`
 - `GET /api/chat/me/unread-count`
-- `GET /api/ws/chat?access_token=<jwt>`
+- `GET /api/ws/chat` s autentizaciou cez `Authorization: Bearer <jwt>` header
 
 ## Web widget -> mobile screen
 
@@ -31,7 +31,7 @@ Pouzite podla `isac-chat/README.md` a backend controllerov:
 
 Web widget:
 
-- parent Angular app injectuje token cez `postMessage`
+- parent Angular app inicializuje widget v `cookie-session` mode bez bearer tokenu v `postMessage`
 
 Mobil:
 
@@ -39,7 +39,7 @@ Mobil:
 - zatial manualne zadanie:
   - `baseUrl`
   - `wsUrl`
-  - bearer token
+- bearer token ulozeny len v secure storage nad Android Keystore
 
 ### 2. Conversation list
 
@@ -124,4 +124,3 @@ Spravanie v mobilnej kostre:
 
 3. Approval competent picker
    Widget pouziva workforce-backed directory. Mobil to zatial nahradza jednoduchym quick flow a treba dorobit plny picker.
-

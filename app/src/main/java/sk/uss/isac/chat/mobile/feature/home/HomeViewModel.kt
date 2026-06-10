@@ -1,8 +1,11 @@
-package sk.uss.isac.chat.mobile.feature.home
+﻿package sk.uss.isac.chat.mobile.feature.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -11,6 +14,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import sk.uss.isac.chat.mobile.app.AlwaysConnectedNetworkConnectivityObserver
+import sk.uss.isac.chat.mobile.app.AppForegroundEvents
+import sk.uss.isac.chat.mobile.app.AppPushEvents
+import sk.uss.isac.chat.mobile.app.NetworkConnectivityObserver
+import sk.uss.isac.chat.mobile.core.auth.toUserFacingLoadMessage
+import sk.uss.isac.chat.mobile.core.data.model.ApprovalCase
+import sk.uss.isac.chat.mobile.core.data.model.ApprovalStatus
 import sk.uss.isac.chat.mobile.core.data.model.ChatDashboard
 import sk.uss.isac.chat.mobile.core.data.model.ChatTab
 import sk.uss.isac.chat.mobile.core.data.repository.ChatRepository
@@ -24,8 +34,13 @@ enum class NewConversationMode {
 data class HomeUiState(
     val isLoading: Boolean = true,
     val dashboard: ChatDashboard? = null,
+    val pendingApprovals: List<ApprovalCase> = emptyList(),
     val activeTab: ChatTab = ChatTab.CHAT,
     val filter: String = "",
+    val isRealtimeConnected: Boolean? = null,
+    val isUsingCachedDashboard: Boolean = false,
+    val connectivityMessage: String? = null,
+    val lastSuccessfulSyncAtEpochMillis: Long? = null,
     val error: String? = null,
     val showNewConversationSheet: Boolean = false,
     val newConversationMode: NewConversationMode = NewConversationMode.DIRECT,
@@ -35,19 +50,29 @@ data class HomeUiState(
     val isCreatingConversation: Boolean = false
 )
 
+data class HomeOpenConversationRequest(
+    val conversationId: Long,
+    val approvalCaseId: Long? = null,
+    val initialPane: String? = null
+)
+
 class HomeViewModel(
-    private val repository: ChatRepository
+    private val repository: ChatRepository,
+    appForegroundEvents: AppForegroundEvents,
+    appPushEvents: AppPushEvents,
+    networkConnectivityObserver: NetworkConnectivityObserver = AlwaysConnectedNetworkConnectivityObserver,
+    private val timeProvider: () -> Long = { System.currentTimeMillis() }
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
-    private val _openConversationEvents = MutableSharedFlow<Long>(extraBufferCapacity = 1)
-    val openConversationEvents: SharedFlow<Long> = _openConversationEvents.asSharedFlow()
+    private val _openConversationEvents = MutableSharedFlow<HomeOpenConversationRequest>(extraBufferCapacity = 1)
+    val openConversationEvents: SharedFlow<HomeOpenConversationRequest> = _openConversationEvents.asSharedFlow()
+    private var scheduledSilentRefresh: Job? = null
 
     init {
         refresh()
         viewModelScope.launch {
-            repository.connectRealtime()
             repository.realtimeEvents.collect { event ->
                 when (event) {
                     is ChatRealtimeEvent.BadgeUpdated -> {
@@ -61,7 +86,7 @@ class HomeViewModel(
                     is ChatRealtimeEvent.ConversationsInvalidated,
                     is ChatRealtimeEvent.ApprovalsInvalidated,
                     is ChatRealtimeEvent.ConversationUpdated,
-                    is ChatRealtimeEvent.ApprovalUpdated -> refresh(silent = true)
+                    is ChatRealtimeEvent.ApprovalUpdated -> scheduleSilentRefresh()
 
                     is ChatRealtimeEvent.PresenceUpdated -> {
                         _uiState.update { state ->
@@ -84,12 +109,86 @@ class HomeViewModel(
                     }
 
                     is ChatRealtimeEvent.Error -> {
-                        _uiState.update { it.copy(error = event.message) }
+                        _uiState.update {
+                            it.copy(
+                                isRealtimeConnected = false,
+                                connectivityMessage = event.message
+                            )
+                        }
                     }
 
-                    ChatRealtimeEvent.Connected -> Unit
+                    ChatRealtimeEvent.Connected -> {
+                        _uiState.update {
+                            it.copy(
+                                isRealtimeConnected = true,
+                                connectivityMessage = if (it.isUsingCachedDashboard) {
+                                    "Spojenie sa obnovilo. Dashboard sa zosynchronizuje pri najbli\u017e\u0161om obnoven\u00ed."
+                                } else {
+                                    null
+                                },
+                                error = null
+                            )
+                        }
+                    }
                 }
             }
+        }
+        viewModelScope.launch {
+            appForegroundEvents.activations
+                .filter { it > 0 }
+                .collect {
+                    scheduleSilentRefresh()
+                }
+        }
+        viewModelScope.launch {
+            appPushEvents.events.collect {
+                scheduleSilentRefresh()
+            }
+        }
+        viewModelScope.launch {
+            var firstConnectivitySnapshot = true
+            networkConnectivityObserver.isConnected
+                .collect { isConnected ->
+                    if (firstConnectivitySnapshot) {
+                        firstConnectivitySnapshot = false
+                        if (!isConnected) {
+                            _uiState.update { state ->
+                                if (state.dashboard == null) {
+                                    state
+                                } else {
+                                    state.copy(
+                                        connectivityMessage = "Mobil je offline. Zobrazujeme posledn\u00e9 na\u010d\u00edtan\u00e9 d\u00e1ta."
+                                    )
+                                }
+                            }
+                        }
+                        return@collect
+                    }
+                    if (isConnected) {
+                        _uiState.update {
+                            it.copy(
+                                connectivityMessage = if (it.isUsingCachedDashboard) {
+                                    "Sie\u0165 je znovu dostupn\u00e1. Dashboard sa ticho zosynchronizuje."
+                                } else {
+                                    it.connectivityMessage
+                                }
+                            )
+                        }
+                        if (_uiState.value.dashboard != null || _uiState.value.isUsingCachedDashboard) {
+                            scheduleSilentRefresh()
+                        }
+                    } else {
+                        _uiState.update { state ->
+                            if (state.dashboard == null) {
+                                state
+                            } else {
+                                state.copy(
+                                    connectivityMessage = "Mobil je offline. Zobrazujeme posledn\u00e9 na\u010d\u00edtan\u00e9 d\u00e1ta."
+                                )
+                            }
+                        }
+                    }
+                }
         }
     }
 
@@ -102,28 +201,70 @@ class HomeViewModel(
     }
 
     fun refresh(silent: Boolean = false) {
+        scheduledSilentRefresh?.cancel()
         viewModelScope.launch {
             if (!silent) {
                 _uiState.update { it.copy(isLoading = true, error = null) }
             }
-            runCatching { repository.loadDashboard() }
-                .onSuccess { dashboard ->
+            runCatching {
+                val dashboard = repository.loadDashboard()
+                val pendingApprovals = runCatching {
+                    repository.listMyApprovalCases(ApprovalStatus.PENDING)
+                }.getOrElse {
+                    emptyList()
+                }
+                HomeRefreshResult(dashboard, pendingApprovals)
+            }
+                .onSuccess { result ->
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            dashboard = dashboard,
+                            dashboard = result.dashboard,
+                            pendingApprovals = result.pendingApprovals,
+                            isUsingCachedDashboard = false,
+                            connectivityMessage = null,
+                            lastSuccessfulSyncAtEpochMillis = timeProvider(),
                             error = null
                         )
                     }
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            error = error.message ?: "Nepodarilo sa nacitat konverzacie."
-                        )
+                    _uiState.update { state ->
+                        if (state.dashboard != null && isRecoverableDashboardFailure(error)) {
+                            state.copy(
+                                isLoading = false,
+                                isUsingCachedDashboard = true,
+                                connectivityMessage = "Zobrazujeme posledn\u00e9 na\u010d\u00edtan\u00e9 d\u00e1ta. Dashboard sa zosynchronizuje po obnoven\u00ed spojenia.",
+                                error = null
+                            )
+                        } else {
+                            state.copy(
+                                isLoading = false,
+                                error = error.toUserFacingLoadMessage("Nepodarilo sa na\u010d\u00edta\u0165 konverz\u00e1cie.")
+                            )
+                        }
                     }
                 }
+        }
+    }
+
+    fun openConversation(conversationId: Long) {
+        if (conversationId > 0) {
+            _openConversationEvents.tryEmit(
+                HomeOpenConversationRequest(conversationId = conversationId)
+            )
+        }
+    }
+
+    fun openPendingApproval(approval: ApprovalCase) {
+        if (approval.conversationId > 0) {
+            _openConversationEvents.tryEmit(
+                HomeOpenConversationRequest(
+                    conversationId = approval.conversationId,
+                    approvalCaseId = approval.id.takeIf { it > 0 },
+                    initialPane = "actions"
+                )
+            )
         }
     }
 
@@ -203,7 +344,7 @@ class HomeViewModel(
                     )
                 }
                 refresh(silent = true)
-                _openConversationEvents.tryEmit(conversation.id)
+                openConversation(conversation.id)
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(
@@ -215,6 +356,14 @@ class HomeViewModel(
         }
     }
 
+    private fun scheduleSilentRefresh() {
+        scheduledSilentRefresh?.cancel()
+        scheduledSilentRefresh = viewModelScope.launch {
+            delay(SILENT_REFRESH_DEBOUNCE_MILLIS)
+            refresh(silent = true)
+        }
+    }
+
     fun logout() {
         viewModelScope.launch {
             repository.disconnectRealtime()
@@ -222,12 +371,41 @@ class HomeViewModel(
         }
     }
 
+    private fun isRecoverableDashboardFailure(error: Throwable): Boolean {
+        val message = error.message?.lowercase().orEmpty()
+        return listOf(
+            "timeout",
+            "timed out",
+            "connection",
+            "connect",
+            "network",
+            "socket",
+            "unreachable",
+            "offline",
+            "reset",
+            "refused"
+        ).any { token -> message.contains(token) }
+    }
+
     companion object {
-        fun factory(repository: ChatRepository): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
+        private const val SILENT_REFRESH_DEBOUNCE_MILLIS = 150L
+
+        fun factory(
+            repository: ChatRepository,
+            appForegroundEvents: AppForegroundEvents,
+            appPushEvents: AppPushEvents,
+            networkConnectivityObserver: NetworkConnectivityObserver
+        ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return HomeViewModel(repository) as T
+                return HomeViewModel(repository, appForegroundEvents, appPushEvents, networkConnectivityObserver) as T
             }
         }
     }
 }
+
+private data class HomeRefreshResult(
+    val dashboard: ChatDashboard,
+    val pendingApprovals: List<ApprovalCase>
+)
+

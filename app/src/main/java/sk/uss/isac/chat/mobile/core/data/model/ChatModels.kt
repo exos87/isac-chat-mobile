@@ -124,6 +124,7 @@ data class ChatAttachment(
     val fileName: String,
     val sizeBytes: Long,
     val createdBySubject: String?,
+    val contentType: String?,
     val previewAvailable: Boolean,
     val previewUrl: String?,
     val localPreviewPath: String?,

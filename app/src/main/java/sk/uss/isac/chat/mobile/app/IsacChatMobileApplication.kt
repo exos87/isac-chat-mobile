@@ -9,6 +9,8 @@ class IsacChatMobileApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         appGraph = AppGraph(applicationContext)
+        appGraph.appForegroundCoordinator.start()
+        appGraph.notificationCoordinator.start()
+        appGraph.pushTokenSyncCoordinator.start()
     }
 }
-

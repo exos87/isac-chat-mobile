@@ -1,0 +1,1 @@
+Stabilizacia mobilneho SSO po BFF auth refaktore. Opraveny callback navrat z Keycloaku a odstranena blikajuca prihlasovacia smycka po uspesnom login-e.

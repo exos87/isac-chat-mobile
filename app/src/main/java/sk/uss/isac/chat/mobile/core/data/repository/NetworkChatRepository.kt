@@ -1,7 +1,8 @@
-package sk.uss.isac.chat.mobile.core.data.repository
+﻿package sk.uss.isac.chat.mobile.core.data.repository
 
 import android.content.Context
 import android.net.Uri
+import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -13,14 +14,19 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MultipartBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.File
-import java.util.Base64
 import sk.uss.isac.chat.mobile.BuildConfig
+import sk.uss.isac.chat.mobile.core.auth.JwtPayloadReader
+import sk.uss.isac.chat.mobile.core.auth.SessionPasswordAuthenticator
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalCase
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalDecisionCode
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalStatus
+import sk.uss.isac.chat.mobile.core.data.model.AuthenticatedSession
 import sk.uss.isac.chat.mobile.core.data.model.ChatAttachment
 import sk.uss.isac.chat.mobile.core.data.model.ChatDashboard
 import sk.uss.isac.chat.mobile.core.data.model.ChatMessage
+import sk.uss.isac.chat.mobile.core.data.model.ChatPushDiagnostics
+import sk.uss.isac.chat.mobile.core.data.model.ChatPushRegistration
+import sk.uss.isac.chat.mobile.core.data.model.ChatPushTestResult
 import sk.uss.isac.chat.mobile.core.data.model.ConversationBundle
 import sk.uss.isac.chat.mobile.core.data.model.ConversationDetail
 import sk.uss.isac.chat.mobile.core.data.model.ConversationMember
@@ -35,6 +41,8 @@ import sk.uss.isac.chat.mobile.core.data.model.MessageType
 import sk.uss.isac.chat.mobile.core.data.model.VisibilityScope
 import sk.uss.isac.chat.mobile.core.data.remote.ApprovalDecisionRequestDto
 import sk.uss.isac.chat.mobile.core.data.remote.ChatApi
+import sk.uss.isac.chat.mobile.core.data.remote.ChatPushDiagnosticsDto
+import sk.uss.isac.chat.mobile.core.data.remote.ChatPushTestResultDto
 import sk.uss.isac.chat.mobile.core.data.remote.CreateApprovalCaseRequestDto
 import sk.uss.isac.chat.mobile.core.data.remote.CreateConversationRequestDto
 import sk.uss.isac.chat.mobile.core.data.remote.SendMessageRequestDto
@@ -50,13 +58,35 @@ class NetworkChatRepository(
     private val appContext: Context,
     private val sessionStore: SessionStore,
     private val realtimeClient: ChatRealtimeClient,
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val gson: Gson
 ) : ChatRepository {
+    private val sessionPasswordAuthenticator = SessionPasswordAuthenticator(
+        baseClient = okHttpClient,
+        gson = gson
+    )
+
     override val session = sessionStore.session
     override val realtimeEvents = realtimeClient.events
 
-    override suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, profileApiUrl: String, xApiType: String) {
-        sessionStore.saveSession(baseUrl, wsUrl, accessToken, profileApiUrl, xApiType)
+    override suspend fun saveSession(
+        baseUrl: String,
+        wsUrl: String,
+        accessToken: String,
+        refreshToken: String?,
+        accessTokenExpiresAtEpochMillis: Long?,
+        profileApiUrl: String,
+        xApiType: String
+    ) {
+        sessionStore.saveSession(
+            baseUrl = baseUrl,
+            wsUrl = wsUrl,
+            accessToken = accessToken,
+            refreshToken = refreshToken,
+            accessTokenExpiresAtEpochMillis = accessTokenExpiresAtEpochMillis,
+            profileApiUrl = profileApiUrl,
+            xApiType = xApiType
+        )
     }
 
     override suspend fun testSession(baseUrl: String, accessToken: String, xApiType: String): Int = withContext(Dispatchers.IO) {
@@ -74,29 +104,55 @@ class NetworkChatRepository(
             val body = response.body?.string().orEmpty()
             val match = Regex(""""unreadCount"\s*:\s*(\d+)""").find(body)
             match?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: error("Odpoved z testu spojenia nema ocakavany format.")
+                ?: error("Odpoveď z testu spojenia nemá očakávaný formát.")
+        }
+    }
+
+    override suspend fun loadChatPushDiagnostics(): ChatPushDiagnostics = withContext(Dispatchers.IO) {
+        val session = requireCurrentSession()
+        val request = Request.Builder()
+            .url("${sanitizeProfileApiUrl(session.profileApiUrl)}/notifications/push/chat/status")
+            .header("Authorization", "Bearer ${session.accessToken.trim()}")
+            .header("X-Api-Type", session.xApiType)
+            .get()
+            .build()
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Načítanie push diagnostiky zlyhalo (${response.code}).")
+            }
+            val payload = response.body?.charStream()?.use {
+                gson.fromJson(it, ChatPushDiagnosticsDto::class.java)
+            } ?: error("Push diagnostika neobsahuje telo odpovede.")
+            payload.toDomain()
+        }
+    }
+
+    override suspend fun sendChatPushTest(): ChatPushTestResult = withContext(Dispatchers.IO) {
+        val session = requireCurrentSession()
+        val request = Request.Builder()
+            .url("${sanitizeProfileApiUrl(session.profileApiUrl)}/notifications/push/chat/test")
+            .header("Authorization", "Bearer ${session.accessToken.trim()}")
+            .header("X-Api-Type", session.xApiType)
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Odoslanie testovacej push notifikácie zlyhalo (${response.code}).")
+            }
+            val payload = response.body?.charStream()?.use {
+                gson.fromJson(it, ChatPushTestResultDto::class.java)
+            } ?: error("Test push neobsahuje telo odpovede.")
+            payload.toDomain()
         }
     }
 
     override suspend fun confirmMobileAppVerification(profileApiUrl: String, accessToken: String, xApiType: String) = withContext(Dispatchers.IO) {
-        val sanitizedProfileApiUrl = profileApiUrl.trim().trimEnd('/')
+        val sanitizedProfileApiUrl = sanitizeProfileApiUrl(profileApiUrl)
         if (sanitizedProfileApiUrl.isBlank()) {
             return@withContext
         }
-        val requestBody = """
-            {
-              "modules": {
-                "mobileApp": {
-                  "platform": "ANDROID",
-                  "packageName": "${BuildConfig.APPLICATION_ID}",
-                  "versionName": "${BuildConfig.VERSION_NAME}",
-                  "status": "VERIFIED",
-                  "verifiedAt": "${java.time.OffsetDateTime.now()}",
-                  "lastSource": "mobile-app"
-                }
-              }
-            }
-        """.trimIndent().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val requestBody = buildMobileAppPreferencesBody(pushToken = null, includeVerifiedAt = true)
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         val request = Request.Builder()
             .url("$sanitizedProfileApiUrl/profile/preferences")
             .header("Authorization", "Bearer ${accessToken.trim()}")
@@ -110,6 +166,43 @@ class NetworkChatRepository(
         }
     }
 
+    override suspend fun syncPushToken(pushToken: String) = withContext(Dispatchers.IO) {
+        val session = currentSession() ?: return@withContext
+        val sanitizedProfileApiUrl = sanitizeProfileApiUrl(session.profileApiUrl)
+        val normalizedToken = pushToken.trim()
+        if (sanitizedProfileApiUrl.isBlank() || normalizedToken.isBlank()) {
+            return@withContext
+        }
+
+        val requestBody = buildMobileAppPreferencesBody(pushToken = normalizedToken, includeVerifiedAt = false)
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+        val request = Request.Builder()
+            .url("$sanitizedProfileApiUrl/profile/preferences")
+            .header("Authorization", "Bearer ${session.accessToken.trim()}")
+            .header("X-Api-Type", session.xApiType)
+            .patch(requestBody)
+            .build()
+
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Synchronizácia push tokenu zlyhala (${response.code}).")
+            }
+        }
+    }
+
+    override suspend fun authenticatePasswordSession(
+        profileApiUrl: String,
+        username: String,
+        password: String,
+        xApiType: String
+    ): AuthenticatedSession = sessionPasswordAuthenticator.authenticate(
+        profileApiUrl = profileApiUrl,
+        username = username,
+        password = password,
+        xApiType = xApiType
+    )
+
     override suspend fun clearSession() {
         realtimeClient.disconnect()
         sessionStore.clearSession()
@@ -119,15 +212,7 @@ class NetworkChatRepository(
 
     override fun currentSubject(): String? {
         val token = currentSession()?.accessToken ?: return null
-        val parts = token.split(".")
-        if (parts.size < 2) {
-            return null
-        }
-        val payload = runCatching {
-            String(Base64.getUrlDecoder().decode(parts[1]))
-        }.getOrNull() ?: return null
-        val subjectMatch = """"sub"\s*:\s*"([^"]+)"""".toRegex().find(payload)
-        return subjectMatch?.groupValues?.getOrNull(1)
+        return JwtPayloadReader.readStringClaim(token, "sub")
     }
 
     override suspend fun connectRealtime() {
@@ -182,6 +267,10 @@ class NetworkChatRepository(
         )
     }
 
+    override suspend fun listMyApprovalCases(status: ApprovalStatus?): List<ApprovalCase> {
+        return chatApi.listMyApprovalCases(url("/chat/approvals/my"), status?.name).map { it.toDomain() }
+    }
+
     override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage {
         return chatApi.sendMessage(
             url("/chat/conversations/$conversationId/messages"),
@@ -197,7 +286,7 @@ class NetworkChatRepository(
             attachments.map { attachment ->
                 val uri = Uri.parse(attachment.uri)
                 val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("Subor ${attachment.displayName} sa nepodarilo nacitat.")
+                    ?: error("Súbor ${attachment.displayName} sa nepodarilo načítať.")
                 val contentType = (attachment.mimeType ?: appContext.contentResolver.getType(uri) ?: "application/octet-stream")
                     .toRequestMediaType()
                 MultipartBody.Part.createFormData(
@@ -231,7 +320,7 @@ class NetworkChatRepository(
             if (!response.isSuccessful) {
                 error("Prilohu sa nepodarilo stiahnut (${response.code}).")
             }
-            val body = response.body ?: error("Odpoved neobsahuje data prilohy.")
+            val body = response.body ?: error("Odpoveď neobsahuje dáta prílohy.")
             val fileName = parseContentDispositionFileName(response.header("Content-Disposition"))
                 ?: "attachment-$attachmentId"
             val mimeType = body.contentType()?.toString() ?: "application/octet-stream"
@@ -244,6 +333,65 @@ class NetworkChatRepository(
                 mimeType = mimeType
             )
         }
+    }
+
+    override suspend fun createMobileWebHandoffUrl(rawUrl: String): String = withContext(Dispatchers.IO) {
+        val session = currentSession() ?: return@withContext rawUrl
+        if (session.accessToken.isBlank()) {
+            return@withContext rawUrl
+        }
+
+        val parsedUrl = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return@withContext rawUrl
+        val host = parsedUrl.host?.lowercase().orEmpty()
+        if (host.isBlank()) {
+            return@withContext rawUrl
+        }
+
+        val internalHosts = buildSet {
+            Uri.parse(session.profileApiUrl).host?.lowercase()?.let(::add)
+            Uri.parse(session.baseUrl).host?.lowercase()?.let(::add)
+        }
+        if (host !in internalHosts) {
+            return@withContext rawUrl
+        }
+
+        val requestBody = """
+            {
+              "refreshToken": ${session.refreshToken?.toJsonString() ?: "null"},
+              "accessTokenExpiresAtEpochMillis": ${session.accessTokenExpiresAtEpochMillis?.toString() ?: "null"}
+            }
+        """.trimIndent().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val sanitizedProfileApiUrl = sanitizeProfileApiUrl(session.profileApiUrl)
+        val request = Request.Builder()
+            .url("$sanitizedProfileApiUrl/auth/mobile-handoff")
+            .header("Authorization", "Bearer ${session.accessToken.trim()}")
+            .header("X-Api-Type", session.xApiType)
+            .post(requestBody)
+            .build()
+
+        val handoffCode = okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Vytvorenie webového handoffu zlyhalo (${response.code}).")
+            }
+            val body = response.body?.string().orEmpty()
+            Regex(""""handoffCode"\s*:\s*"([^"]+)"""").find(body)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.takeIf { it.isNotBlank() }
+                ?: error("Backend nevrátil handoff code.")
+        }
+
+        val existingFragment = parsedUrl.encodedFragment?.takeIf { it.isNotBlank() }
+        val mergedFragment = if (existingFragment.isNullOrBlank()) {
+            "mobileHandoffCode=${Uri.encode(handoffCode)}"
+        } else {
+            "$existingFragment&mobileHandoffCode=${Uri.encode(handoffCode)}"
+        }
+
+        parsedUrl.buildUpon()
+            .encodedFragment(mergedFragment)
+            .build()
+            .toString()
     }
 
     override suspend fun createDirectConversation(subject: String): ConversationDetail {
@@ -299,10 +447,14 @@ class NetworkChatRepository(
         )
     }
 
-    override suspend fun decideApproval(approvalCaseId: Long, decisionCode: ApprovalDecisionCode) {
+    override suspend fun decideApproval(
+        approvalCaseId: Long,
+        decisionCode: ApprovalDecisionCode,
+        decisionNote: String?
+    ) {
         chatApi.decideApprovalCase(
             url("/chat/approvals/$approvalCaseId/decisions"),
-            ApprovalDecisionRequestDto(decisionCode = decisionCode.name, decisionNote = null)
+            ApprovalDecisionRequestDto(decisionCode = decisionCode.name, decisionNote = decisionNote)
         )
     }
 
@@ -341,6 +493,45 @@ class NetworkChatRepository(
             append(baseUrl.trimEnd('/'))
             append(path)
         }
+    }
+
+    private fun requireCurrentSession(): UserSession =
+        currentSession() ?: error("Najprv sa prihláste do aplikácie.")
+
+    private fun sanitizeProfileApiUrl(profileApiUrl: String): String =
+        profileApiUrl.trim().trimEnd('/')
+
+    private fun buildMobileAppPreferencesBody(pushToken: String?, includeVerifiedAt: Boolean): String {
+        val now = java.time.OffsetDateTime.now().toString()
+        val deviceManufacturer = android.os.Build.MANUFACTURER.orEmpty()
+        val deviceModel = android.os.Build.MODEL.orEmpty()
+        val osVersion = android.os.Build.VERSION.RELEASE.orEmpty()
+        val sdkInt = android.os.Build.VERSION.SDK_INT
+        val verifiedAtLine = if (includeVerifiedAt) """
+                  "verifiedAt": "$now",
+        """.trimIndent() + "\n" else ""
+        val pushSection = if (pushToken != null) """
+                  "pushProvider": "FCM",
+                  "pushToken": ${pushToken.toJsonString()},
+                  "pushTokenUpdatedAt": "$now",
+        """.trimIndent() + "\n" else ""
+        return """
+            {
+              "modules": {
+                "mobileApp": {
+                  "platform": "ANDROID",
+                  "packageName": "${BuildConfig.APPLICATION_ID}",
+                  "versionName": "${BuildConfig.VERSION_NAME}",
+                  "status": "VERIFIED",
+                  ${verifiedAtLine}${pushSection}                  "lastSource": "mobile-app",
+                  "deviceManufacturer": ${deviceManufacturer.toJsonString()},
+                  "deviceModel": ${deviceModel.toJsonString()},
+                  "osVersion": ${osVersion.toJsonString()},
+                  "sdkInt": $sdkInt
+                }
+              }
+            }
+        """.trimIndent()
     }
 
     private suspend fun resolveAttachmentPreview(attachment: ChatAttachment): ChatAttachment {
@@ -396,10 +587,27 @@ class NetworkChatRepository(
         value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }
 
+private fun String.toJsonString(): String =
+    buildString(length + 2) {
+        append('"')
+        this@toJsonString.forEach { char ->
+            when (char) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\b' -> append("\\b")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(char)
+            }
+        }
+        append('"')
+    }
+
 private fun sk.uss.isac.chat.mobile.core.data.remote.ConversationListItemDto.toDomain(): ConversationSummary =
     ConversationSummary(
         id = id,
-        title = title?.takeIf { it.isNotBlank() } ?: "Konverzacia #$id",
+        title = title?.takeIf { it.isNotBlank() } ?: "Konverzácia #$id",
         type = typeCode.toConversationType(),
         status = statusCode.toConversationStatus(),
         unreadCount = unreadCount ?: 0,
@@ -413,7 +621,7 @@ private fun sk.uss.isac.chat.mobile.core.data.remote.ConversationListItemDto.toD
 private fun sk.uss.isac.chat.mobile.core.data.remote.ConversationDetailDto.toDomain(): ConversationDetail =
     ConversationDetail(
         id = id,
-        title = title?.takeIf { it.isNotBlank() } ?: "Konverzacia #$id",
+        title = title?.takeIf { it.isNotBlank() } ?: "Konverzácia #$id",
         type = typeCode.toConversationType(),
         status = statusCode.toConversationStatus(),
         unreadCount = unreadCount ?: 0,
@@ -459,6 +667,7 @@ private fun sk.uss.isac.chat.mobile.core.data.remote.ChatAttachmentDto.toDomain(
         fileName = fileName ?: "attachment",
         sizeBytes = sizeBytes ?: 0L,
         createdBySubject = createdBySubject,
+        contentType = contentType,
         previewAvailable = previewAvailable ?: false,
         previewUrl = previewUrl,
         localPreviewPath = null,
@@ -494,6 +703,52 @@ private fun sk.uss.isac.chat.mobile.core.data.remote.ApprovalCaseDto.toDomain():
         decisionNote = decisionNote,
         requestedAt = requestedAt,
         resolvedAt = resolvedAt
+    )
+
+private fun ChatPushDiagnosticsDto.toDomain(): ChatPushDiagnostics =
+    ChatPushDiagnostics(
+        enabled = enabled ?: false,
+        configured = configured ?: false,
+        summary = summary.orEmpty(),
+        recommendedAction = recommendedAction?.trim().orEmpty(),
+        gateway = gateway?.trim().orEmpty(),
+        missingRequirements = missingRequirements.orEmpty(),
+        registeredDeviceCount = registeredDeviceCount ?: 0,
+        registeredPackages = registeredPackages.orEmpty(),
+        registrationHealth = registrationHealth?.trim()?.ifBlank { "UNKNOWN" } ?: "UNKNOWN",
+        registrationSummary = registrationSummary?.trim().orEmpty(),
+        registrationIssues = registrationIssues.orEmpty(),
+        deliveryHealth = deliveryHealth?.trim()?.ifBlank { "UNKNOWN" } ?: "UNKNOWN",
+        deliverySummary = deliverySummary?.trim().orEmpty(),
+        currentRegistration = currentRegistration?.let {
+            ChatPushRegistration(
+                status = it.status?.trim().orEmpty(),
+                pushProvider = it.pushProvider?.trim().orEmpty(),
+                tokenPreview = it.tokenPreview?.trim()?.ifBlank { null },
+                pushTokenPresent = it.pushTokenPresent ?: false,
+                packageName = it.packageName?.trim()?.ifBlank { null },
+                versionName = it.versionName?.trim()?.ifBlank { null },
+                platform = it.platform?.trim()?.ifBlank { null },
+                deviceManufacturer = it.deviceManufacturer?.trim()?.ifBlank { null },
+                deviceModel = it.deviceModel?.trim()?.ifBlank { null },
+                osVersion = it.osVersion?.trim()?.ifBlank { null },
+                sdkInt = it.sdkInt,
+                lastSource = it.lastSource?.trim()?.ifBlank { null },
+                verifiedAt = it.verifiedAt?.trim()?.ifBlank { null },
+                pushTokenUpdatedAt = it.pushTokenUpdatedAt?.trim()?.ifBlank { null },
+                lastPushAttemptedAt = it.lastPushAttemptedAt?.trim()?.ifBlank { null },
+                lastPushDeliveredAt = it.lastPushDeliveredAt?.trim()?.ifBlank { null },
+                lastPushError = it.lastPushError?.trim()?.ifBlank { null }
+            )
+        }
+    )
+
+private fun ChatPushTestResultDto.toDomain(): ChatPushTestResult =
+    ChatPushTestResult(
+        requested = requested ?: false,
+        delivered = delivered ?: false,
+        registeredDeviceCount = registeredDeviceCount ?: 0,
+        summary = summary.orEmpty()
     )
 
 private fun String?.toConversationType(): ConversationType = when (this) {

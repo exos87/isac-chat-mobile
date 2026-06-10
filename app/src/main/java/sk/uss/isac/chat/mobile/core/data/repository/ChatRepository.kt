@@ -2,9 +2,14 @@ package sk.uss.isac.chat.mobile.core.data.repository
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import sk.uss.isac.chat.mobile.core.data.model.ApprovalCase
 import sk.uss.isac.chat.mobile.core.data.model.ApprovalDecisionCode
+import sk.uss.isac.chat.mobile.core.data.model.ApprovalStatus
+import sk.uss.isac.chat.mobile.core.data.model.AuthenticatedSession
 import sk.uss.isac.chat.mobile.core.data.model.ChatDashboard
 import sk.uss.isac.chat.mobile.core.data.model.ChatMessage
+import sk.uss.isac.chat.mobile.core.data.model.ChatPushDiagnostics
+import sk.uss.isac.chat.mobile.core.data.model.ChatPushTestResult
 import sk.uss.isac.chat.mobile.core.data.model.ChatTab
 import sk.uss.isac.chat.mobile.core.data.model.ConversationBundle
 import sk.uss.isac.chat.mobile.core.data.model.ConversationDetail
@@ -20,11 +25,27 @@ interface ChatRepository {
     val session: StateFlow<UserSession?>
     val realtimeEvents: Flow<ChatRealtimeEvent>
 
-    suspend fun saveSession(baseUrl: String, wsUrl: String, accessToken: String, profileApiUrl: String, xApiType: String)
+    suspend fun saveSession(
+        baseUrl: String,
+        wsUrl: String,
+        accessToken: String,
+        refreshToken: String? = null,
+        accessTokenExpiresAtEpochMillis: Long? = null,
+        profileApiUrl: String,
+        xApiType: String
+    )
 
     suspend fun testSession(baseUrl: String, accessToken: String, xApiType: String): Int
 
+    suspend fun loadChatPushDiagnostics(): ChatPushDiagnostics
+
+    suspend fun sendChatPushTest(): ChatPushTestResult
+
     suspend fun confirmMobileAppVerification(profileApiUrl: String, accessToken: String, xApiType: String)
+
+    suspend fun syncPushToken(pushToken: String)
+
+    suspend fun authenticatePasswordSession(profileApiUrl: String, username: String, password: String, xApiType: String): AuthenticatedSession
 
     suspend fun clearSession()
 
@@ -42,6 +63,8 @@ interface ChatRepository {
 
     suspend fun loadConversationBundle(conversationId: Long): ConversationBundle
 
+    suspend fun listMyApprovalCases(status: ApprovalStatus? = null): List<ApprovalCase>
+
     suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage
 
     suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>)
@@ -53,6 +76,8 @@ interface ChatRepository {
     suspend fun deleteAttachment(attachmentId: Long)
 
     suspend fun downloadAttachment(attachmentId: Long): DownloadedAttachment
+
+    suspend fun createMobileWebHandoffUrl(rawUrl: String): String
 
     suspend fun createDirectConversation(subject: String): ConversationDetail
 
@@ -72,7 +97,8 @@ interface ChatRepository {
 
     suspend fun decideApproval(
         approvalCaseId: Long,
-        decisionCode: ApprovalDecisionCode
+        decisionCode: ApprovalDecisionCode,
+        decisionNote: String? = null
     )
 
     suspend fun renameConversation(conversationId: Long, title: String)

@@ -2,67 +2,143 @@ package sk.uss.isac.chat.mobile.core.network
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import kotlinx.coroutines.launch
 import sk.uss.isac.chat.mobile.core.session.UserSession
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
 
 class StompChatRealtimeClient(
-    private val okHttpClient: OkHttpClient,
-    private val gson: Gson
+    private val socketFactory: StompSocketFactory,
+    private val gson: Gson,
+    private val reconnectBaseDelayMillis: Long = 1_500,
+    private val reconnectMaxDelayMillis: Long = 15_000,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) : ChatRealtimeClient {
     private val eventFlow = MutableSharedFlow<ChatRealtimeEvent>(extraBufferCapacity = 32)
     private val subscriptionCounter = AtomicInteger(0)
 
     override val events: Flow<ChatRealtimeEvent> = eventFlow
 
-    private var webSocket: WebSocket? = null
+    private var socketConnection: StompSocketConnection? = null
+    private var activeSession: UserSession? = null
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt = 0
+
+    @Volatile
+    private var manualDisconnect = false
+
     private val buffer = StringBuilder()
 
     override suspend fun connect(session: UserSession) {
-        disconnect()
-        val request = Request.Builder()
-            .url("${session.wsUrl}?access_token=${session.accessToken}")
-            .build()
+        activeSession = session
+        manualDisconnect = false
+        reconnectAttempt = 0
+        cancelReconnect()
+        openSocket(session, resetBuffer = true)
+    }
 
-        webSocket = okHttpClient.newWebSocket(
-            request,
-            object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
+    override fun disconnect() {
+        manualDisconnect = true
+        activeSession = null
+        reconnectAttempt = 0
+        cancelReconnect()
+        closeSocket()
+        buffer.clear()
+    }
+
+    private fun openSocket(session: UserSession, resetBuffer: Boolean) {
+        closeSocket()
+        if (resetBuffer) {
+            buffer.clear()
+        }
+
+        lateinit var connection: StompSocketConnection
+        connection = socketFactory.open(
+            url = session.wsUrl,
+            accessToken = session.accessToken,
+            listener = object : StompSocketListener {
+                override fun onOpen() {
+                    if (socketConnection !== connection) {
+                        return
+                    }
+                    reconnectAttempt = 0
+                    cancelReconnect()
                     sendFrame(
                         command = "CONNECT",
                         headers = mapOf(
                             "accept-version" to "1.2",
-                            "heart-beat" to "10000,10000"
+                            "heart-beat" to "10000,10000",
+                            "Authorization" to "Bearer ${session.accessToken}"
                         )
                     )
                 }
 
-                override fun onMessage(webSocket: WebSocket, text: String) {
+                override fun onMessage(text: String) {
+                    if (socketConnection !== connection) {
+                        return
+                    }
                     buffer.append(text)
                     parseFrames()
                 }
 
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    eventFlow.tryEmit(ChatRealtimeEvent.Error(t.message ?: "Realtime connection failed"))
+                override fun onFailure(message: String) {
+                    if (socketConnection !== connection) {
+                        return
+                    }
+                    eventFlow.tryEmit(ChatRealtimeEvent.Error(message))
+                    scheduleReconnect()
                 }
 
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                override fun onClosed(code: Int, reason: String) {
+                    if (socketConnection !== connection) {
+                        return
+                    }
+                    socketConnection = null
+                    if (manualDisconnect) {
+                        return
+                    }
                     eventFlow.tryEmit(ChatRealtimeEvent.Error("Realtime closed: $code $reason"))
+                    scheduleReconnect()
                 }
             }
         )
+        socketConnection = connection
     }
 
-    override fun disconnect() {
-        webSocket?.close(1000, "disconnect")
-        webSocket = null
-        buffer.clear()
+    private fun scheduleReconnect() {
+        if (manualDisconnect || activeSession == null || reconnectJob?.isActive == true) {
+            return
+        }
+        val attempt = reconnectAttempt++
+        val delayMillis = min(
+            reconnectBaseDelayMillis * (1L shl attempt.coerceAtMost(4)),
+            reconnectMaxDelayMillis
+        )
+        reconnectJob = scope.launch {
+            delay(delayMillis)
+            val session = activeSession ?: return@launch
+            if (manualDisconnect) {
+                return@launch
+            }
+            openSocket(session, resetBuffer = true)
+        }
+    }
+
+    private fun cancelReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
+    private fun closeSocket() {
+        socketConnection?.close(1000, "disconnect")
+        socketConnection = null
     }
 
     private fun parseFrames() {
@@ -101,7 +177,7 @@ class StompChatRealtimeClient(
                 subscribe("/user/queue/chat/badge")
                 subscribe("/user/queue/chat/conversations")
                 subscribe("/user/queue/chat/approvals")
-                subscribe("/topic/chat/presence")
+                subscribe("/user/queue/chat/presence")
             }
 
             "MESSAGE" -> handleMessage(headers["destination"].orEmpty(), bodyPart)
@@ -181,6 +257,6 @@ class StompChatRealtimeClient(
                 add(body)
             }
         }
-        webSocket?.send(lines.joinToString(separator = "\n", postfix = "\u0000"))
+        socketConnection?.send(lines.joinToString(separator = "\n", postfix = "\u0000"))
     }
 }

@@ -12,9 +12,7 @@ class ApiHeadersInterceptor(
         val currentSession = sessionStore.currentSession()
         val request = chain.request().newBuilder()
             .header("X-Api-Type", currentSession?.xApiType ?: BuildConfig.X_API_TYPE)
-            .header("Accept", "application/json")
             .build()
         return chain.proceed(request)
     }
 }
-
