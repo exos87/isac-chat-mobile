@@ -1,0 +1,17 @@
+@startuml
+title isac-chat-mobile – current source boundary (2026-09-22)
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Arial
+legend right
+  VERIFIED SOURCE = repository evidence
+  PARTIAL = missing deploy/runtime/acceptance gate
+endlegend
+[isac-chat-mobile] as M
+[UseIT core / API contracts] as CORE
+[External or bounded-context consumers] as EXT
+M --> CORE : contract / event / authenticated API
+CORE --> M : scoped data or command
+M --> EXT : owned capability
+@enduml
+
