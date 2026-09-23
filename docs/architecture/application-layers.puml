@@ -1,0 +1,35 @@
+@startuml
+title isac-chat-mobile – application layers and ownership (2026-09-24)
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Arial
+legend right
+  VERIFIED SOURCE = repository source evidence
+  PARTIAL = source exists; runtime/deploy/acceptance gate remains
+  PLANNED = target only, never current implementation
+  External/partner scope is not owned by isac-chat-mobile
+endlegend
+package "Presentation / channel" as P {
+  [REST / Angular / Android / adapter] as PRESENT
+}
+package "Application / domain" as A {
+  [Kotlin / Gradle Android client application services] as APP
+  [Kotlin / Gradle Android client domain rules] as DOMAIN
+}
+package "Persistence / integration" as I {
+  [Repositories / outbox / contract adapters] as REPO
+  [Owned database or external contract boundary] as DATA
+}
+package "Platform / operations" as O {
+  [Keycloak / broker / object storage / deployment profile] as PLATFORM
+}
+PRESENT --> APP : authenticated request / event
+APP --> DOMAIN : use case
+DOMAIN --> REPO : owned state change
+REPO --> DATA : persistence or typed delivery
+APP --> PLATFORM : tenant, audit, telemetry
+note right of DATA
+  Downstream consumers:
+  isac-chat\n  isac-api-spec
+end note
+@enduml
