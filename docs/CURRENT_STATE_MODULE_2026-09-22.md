@@ -21,3 +21,5 @@ Status: VERIFIED SOURCE; Play/release status PARTIAL
 Source baseline nepreukazuje image, bežiaci runtime, produkciu ani zákaznícku akceptáciu. Diagram v docs/architecture/current-state.puml je udržiavateľný zdrojový náčrt hranice modulu, nie deployment diagram.
 
 Exportovateľná trojsekčná vizualizácia: [current-state.svg](architecture/current-state.svg). Centrálny album s produktovým a modulovými SVG je v dokumentačnom repozitári `isac-devops/produkt dokumentacia/30-Modules/visuals/2026-09-22`.
+
+Podrobná UML dokumentácia: [architecture/README.md](architecture/README.md) obsahuje aplikačné vrstvy, integrácie/nasadenie a dátový model alebo explicitnú hranicu bez vlastnej DB.

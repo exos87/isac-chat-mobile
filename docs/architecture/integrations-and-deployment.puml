@@ -1,0 +1,24 @@
+@startuml
+title isac-chat-mobile – integrations, deployment and boundaries (2026-09-24)
+skinparam shadowing false
+skinparam defaultFontName Arial
+legend right
+  Arrows describe source contracts, not live connectivity.
+  Source ≠ image ≠ runtime ≠ customer acceptance.
+endlegend
+cloud "Partner / external systems" as EXT
+component "Kotlin / Gradle Android client" as M
+component "Keycloak / tenant policy" as IAM
+component "RabbitMQ / MQTT / HTTP" as BUS
+database "Module-owned DB/schema" as DB
+node "Compose / Kubernetes / customer overlay" as DEP
+EXT --> M : input / provider result
+IAM --> M : identity + authorization
+M --> BUS : typed event / delivery
+M --> DB : bounded-context state
+DEP --> M : deployment profile
+component "isac-chat" as C0
+M --> C0 : contract / projection
+component "isac-api-spec" as C1
+M --> C1 : contract / projection
+@enduml

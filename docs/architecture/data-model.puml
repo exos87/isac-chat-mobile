@@ -1,0 +1,11 @@
+@startuml
+title isac-chat-mobile – data ownership boundary (2026-09-24)
+skinparam shadowing false
+skinparam defaultFontName Arial
+rectangle "Kotlin / Gradle Android client" as M
+note right of M
+  No own business ER model is claimed in this repository.
+  The module consumes or produces contracts owned elsewhere.
+  Verify generated client/event schemas against the source baseline.
+end note
+@enduml
