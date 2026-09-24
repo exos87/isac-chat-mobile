@@ -1,24 +1,50 @@
 @startuml
-title isac-chat-mobile – integrations, deployment and boundaries (2026-09-24)
+!include <archimate/Archimate>
+left to right direction
+skinparam linetype ortho
+skinparam nodesep 90
+skinparam ranksep 90
+skinparam padding 20
 skinparam shadowing false
 skinparam defaultFontName Arial
+title isac-chat-mobile – integrácie, nasadenie a hranice (ArchiMate, 2026-09-24)
 legend right
-  Arrows describe source contracts, not live connectivity.
-  Source ≠ image ≠ runtime ≠ customer acceptance.
+  ArchiMate elements follow the repository reference archnodes.puml.
+  Orthogonal lines and explicit layer/group separation prevent routes through elements.
+  Source evidence is not runtime or customer acceptance evidence.
+  Java 25 / Spring Boot 4.1.1 is the verified main baseline; exceptions remain explicit.
 endlegend
-cloud "Partner / external systems" as EXT
-component "Kotlin / Gradle Android client" as M
-component "Keycloak / tenant policy" as IAM
-component "RabbitMQ / MQTT / HTTP" as BUS
-database "Module-owned DB/schema" as DB
-node "Compose / Kubernetes / customer overlay" as DEP
-EXT --> M : input / provider result
-IAM --> M : identity + authorization
-M --> BUS : typed event / delivery
-M --> DB : bounded-context state
-DEP --> M : deployment profile
-component "isac-chat" as C0
-M --> C0 : contract / projection
-component "isac-api-spec" as C1
-M --> C1 : contract / projection
+Grouping(EXTERNAL, "External / partner layer") {
+  Business_Actor(PARTNER, "Partner / external system")
+  Application_Service(CONTRACT, "Approved API / event contract")
+  Rel_Serving(CONTRACT, PARTNER, "provides input")
+}
+Grouping(APPLICATION, "Application layer") {
+  Application_Component(MODULE, "Kotlin / Gradle Android client")
+  Application_Service(INBOUND, "Inbound adapter / endpoint")
+  Application_Service(OUTBOUND, "Outbound contract / projection")
+  Rel_Serving(MODULE, INBOUND, "accepts")
+  Rel_Serving(MODULE, OUTBOUND, "publishes")
+  Rel_Flow(CONTRACT, INBOUND, "validated contract")
+}
+Grouping(PLATFORM, "Technology and deployment layer") {
+  Technology_SystemSoftware(JAVA, "Java 25")
+  Technology_SystemSoftware(SPRING, "Spring Boot 4.1.1")
+  Technology_SystemSoftware(IAM, "Keycloak / tenant policy")
+  Technology_SystemSoftware(BROKER, "RabbitMQ / MQTT / HTTP")
+  Technology_Node(RUNTIME, "Compose / Kubernetes / customer overlay")
+  Technology_SystemSoftware(DB, "Module-owned database / schema")
+  Rel_Assignment(JAVA, SPRING, "platform")
+  Rel_Assignment(RUNTIME, MODULE, "deploys")
+  Rel_Assignment(SPRING, MODULE, "runs")
+  Rel_Serving(IAM, MODULE, "authorizes")
+  Rel_Serving(BROKER, OUTBOUND, "transports")
+  Rel_Access(MODULE, DB, "persists")
+}
+Grouping(CONSUMERS, "Downstream consumers") {
+  Application_Component(C0, "isac-chat")
+  Application_Component(C1, "isac-api-spec")
+}
+Rel_Flow(OUTBOUND, C0, "typed delivery")
+Rel_Flow(OUTBOUND, C1, "typed delivery")
 @enduml

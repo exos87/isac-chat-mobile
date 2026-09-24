@@ -1,11 +1,28 @@
 @startuml
-title isac-chat-mobile – data ownership boundary (2026-09-24)
+!include <archimate/Archimate>
+left to right direction
+skinparam linetype ortho
+skinparam nodesep 90
+skinparam ranksep 90
+skinparam padding 20
 skinparam shadowing false
 skinparam defaultFontName Arial
-rectangle "Kotlin / Gradle Android client" as M
-note right of M
+title isac-chat-mobile – dátové vlastníctvo / ER hranica (ArchiMate, 2026-09-24)
+legend right
+  ArchiMate elements follow the repository reference archnodes.puml.
+  Orthogonal lines and explicit layer/group separation prevent routes through elements.
+  Source evidence is not runtime or customer acceptance evidence.
+  Java 25 / Spring Boot 4.1.1 is the verified main baseline; exceptions remain explicit.
+endlegend
+Grouping(APPLICATION, "Application ownership") {
+  Application_Component(MODULE, "Kotlin / Gradle Android client")
+}
+Grouping(DATA, "Application data objects") {
+  Application_DataObject(CONTRACTS, "Contract schemas owned elsewhere")
+}
+Rel_Access(MODULE, CONTRACTS, "consumes / publishes")
+note right of CONTRACTS
   No own business ER model is claimed in this repository.
-  The module consumes or produces contracts owned elsewhere.
-  Verify generated client/event schemas against the source baseline.
+  API/event schemas remain authoritative in the owning module.
 end note
 @enduml

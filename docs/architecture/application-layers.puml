@@ -1,35 +1,50 @@
 @startuml
-title isac-chat-mobile – application layers and ownership (2026-09-24)
+!include <archimate/Archimate>
+left to right direction
+skinparam linetype ortho
+skinparam nodesep 90
+skinparam ranksep 90
+skinparam padding 20
 skinparam shadowing false
-skinparam componentStyle rectangle
 skinparam defaultFontName Arial
+title isac-chat-mobile – aplikačné vrstvy a vlastníctvo (ArchiMate, 2026-09-24)
 legend right
-  VERIFIED SOURCE = repository source evidence
-  PARTIAL = source exists; runtime/deploy/acceptance gate remains
-  PLANNED = target only, never current implementation
-  External/partner scope is not owned by isac-chat-mobile
+  ArchiMate elements follow the repository reference archnodes.puml.
+  Orthogonal lines and explicit layer/group separation prevent routes through elements.
+  Source evidence is not runtime or customer acceptance evidence.
+  Java 25 / Spring Boot 4.1.1 is the verified main baseline; exceptions remain explicit.
 endlegend
-package "Presentation / channel" as P {
-  [REST / Angular / Android / adapter] as PRESENT
+Grouping(BUSINESS, "Business layer") {
+  Business_Actor(USER, "Používateľ / tenant")
+  Business_Service(SERVICE, "Kotlin / Gradle Android client business service")
+  Rel_Serving(SERVICE, USER, "serves")
 }
-package "Application / domain" as A {
-  [Kotlin / Gradle Android client application services] as APP
-  [Kotlin / Gradle Android client domain rules] as DOMAIN
+Grouping(APPLICATION, "Application layer") {
+  Application_Component(MODULE, "Kotlin / Gradle Android client")
+  Application_Service(API, "REST / event contract")
+  Application_Function(DOMAIN, "Use-case / domain rules")
+  Rel_Realization(MODULE, SERVICE, "realizes")
+  Rel_Serving(MODULE, API, "exposes")
+  Rel_Triggering(API, DOMAIN, "invokes")
 }
-package "Persistence / integration" as I {
-  [Repositories / outbox / contract adapters] as REPO
-  [Owned database or external contract boundary] as DATA
+Grouping(DATA, "Data and integration layer") {
+  Application_DataObject(STATE, "Owned state / contract schema")
+  Application_DataObject(AUDIT, "Audit / inbox / outbox")
+  Rel_Access(DOMAIN, STATE, "read/write")
+  Rel_Access(DOMAIN, AUDIT, "records")
 }
-package "Platform / operations" as O {
-  [Keycloak / broker / object storage / deployment profile] as PLATFORM
+Grouping(TECHNOLOGY, "Technology layer") {
+  Technology_SystemSoftware(JAVA, "Java 25")
+  Technology_SystemSoftware(SPRING, "Spring Boot 4.1.1")
+  Technology_Node(RUNTIME, "Compose / Kubernetes profile")
+  Rel_Assignment(RUNTIME, MODULE, "hosts")
+  Rel_Assignment(SPRING, MODULE, "runs")
+  Rel_Assignment(JAVA, SPRING, "platform")
 }
-PRESENT --> APP : authenticated request / event
-APP --> DOMAIN : use case
-DOMAIN --> REPO : owned state change
-REPO --> DATA : persistence or typed delivery
-APP --> PLATFORM : tenant, audit, telemetry
-note right of DATA
-  Downstream consumers:
-  isac-chat\n  isac-api-spec
-end note
+Grouping(CONSUMERS, "Downstream consumers") {
+  Application_Component(C0, "isac-chat")
+  Application_Component(C1, "isac-api-spec")
+}
+Rel_Flow(MODULE, C0, "contract / projection")
+Rel_Flow(MODULE, C1, "contract / projection")
 @enduml
