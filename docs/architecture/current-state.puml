@@ -1,17 +1,50 @@
 @startuml
-title isac-chat-mobile – current source boundary (2026-09-22)
+!include <archimate/Archimate>
+left to right direction
+skinparam linetype ortho
+skinparam nodesep 90
+skinparam ranksep 90
+skinparam padding 20
 skinparam shadowing false
-skinparam componentStyle rectangle
 skinparam defaultFontName Arial
+title isac-chat-mobile – aplikačné vrstvy a vlastníctvo (ArchiMate, 2026-09-24)
 legend right
-  VERIFIED SOURCE = repository evidence
-  PARTIAL = missing deploy/runtime/acceptance gate
+  ArchiMate elements follow the repository reference archnodes.puml.
+  Orthogonal lines and explicit layer/group separation prevent routes through elements.
+  Source evidence is not runtime or customer acceptance evidence.
+  Java 25 / Spring Boot 4.1.1 is the verified main baseline; exceptions remain explicit.
 endlegend
-[isac-chat-mobile] as M
-[UseIT core / API contracts] as CORE
-[External or bounded-context consumers] as EXT
-M --> CORE : contract / event / authenticated API
-CORE --> M : scoped data or command
-M --> EXT : owned capability
+Grouping(BUSINESS, "Business layer") {
+  Business_Actor(USER, "Používateľ / tenant")
+  Business_Service(SERVICE, "Kotlin / Gradle Android client business service")
+  Rel_Serving(SERVICE, USER, "serves")
+}
+Grouping(APPLICATION, "Application layer") {
+  Application_Component(MODULE, "Kotlin / Gradle Android client")
+  Application_Service(API, "REST / event contract")
+  Application_Function(DOMAIN, "Use-case / domain rules")
+  Rel_Realization(MODULE, SERVICE, "realizes")
+  Rel_Serving(MODULE, API, "exposes")
+  Rel_Triggering(API, DOMAIN, "invokes")
+}
+Grouping(DATA, "Data and integration layer") {
+  Application_DataObject(STATE, "Owned state / contract schema")
+  Application_DataObject(AUDIT, "Audit / inbox / outbox")
+  Rel_Access(DOMAIN, STATE, "read/write")
+  Rel_Access(DOMAIN, AUDIT, "records")
+}
+Grouping(TECHNOLOGY, "Technology layer") {
+  Technology_SystemSoftware(JAVA, "Java 25")
+  Technology_SystemSoftware(SPRING, "Spring Boot 4.1.1")
+  Technology_Node(RUNTIME, "Compose / Kubernetes profile")
+  Rel_Assignment(RUNTIME, MODULE, "hosts")
+  Rel_Assignment(SPRING, MODULE, "runs")
+  Rel_Assignment(JAVA, SPRING, "platform")
+}
+Grouping(CONSUMERS, "Downstream consumers") {
+  Application_Component(C0, "isac-chat")
+  Application_Component(C1, "isac-api-spec")
+}
+Rel_Flow(MODULE, C0, "contract / projection")
+Rel_Flow(MODULE, C1, "contract / projection")
 @enduml
-
