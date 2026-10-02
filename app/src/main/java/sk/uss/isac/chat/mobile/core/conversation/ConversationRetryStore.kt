@@ -5,15 +5,20 @@ import android.content.SharedPreferences
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import sk.uss.isac.chat.mobile.core.data.model.LocalAttachmentDraft
 import sk.uss.isac.chat.mobile.core.data.model.VisibilityScope
 
 sealed interface PendingConversationRetry
 
+private val retryMutationLock = Mutex()
+
 data class PendingConversationMessageRetry(
     val body: String,
     val attachments: List<LocalAttachmentDraft>,
-    val visibilityScope: VisibilityScope
+    val visibilityScope: VisibilityScope,
+    val clientMessageId: String? = null
 ) : PendingConversationRetry
 
 data class PendingConversationAttachmentRetry(
@@ -27,41 +32,46 @@ interface ConversationRetryStore {
     suspend fun saveMessageRetry(conversationId: Long, retry: PendingConversationMessageRetry)
     suspend fun saveAttachmentRetry(conversationId: Long, retry: PendingConversationAttachmentRetry)
     suspend fun clearRetry(conversationId: Long)
+    suspend fun clearRetryIfMatches(conversationId: Long, expected: PendingConversationRetry)
 }
 
 class SharedPreferencesConversationRetryStore internal constructor(
     private val preferences: SharedPreferences,
     private val gson: Gson,
-    private val owner: String? = null
+    private val owner: String? = null,
+    private val mutationLock: Mutex = retryMutationLock
 ) : ConversationRetryStore {
     constructor(context: Context, gson: Gson) : this(
         context.applicationContext.getSharedPreferences("conversation_retries", Context.MODE_PRIVATE), gson
     )
 
-    override fun forOwner(owner: String?): ConversationRetryStore = SharedPreferencesConversationRetryStore(preferences, gson, owner)
+    override fun forOwner(owner: String?): ConversationRetryStore = SharedPreferencesConversationRetryStore(preferences, gson, owner, mutationLock)
 
     override suspend fun loadRetry(conversationId: Long): PendingConversationRetry? {
         if (owner == null) return null
-        val raw = preferences.getString(retryKey(conversationId), null)?.trim()?.ifBlank { null }
-            ?: return null
+        val raw = preferences.getString(retryKey(conversationId), null) ?: return null
         return runCatching {
-            val persisted = gson.fromJson(raw, PersistedConversationRetry::class.java) ?: return@runCatching null
+            check(raw.isNotBlank())
+            val persisted = checkNotNull(gson.fromJson(raw, PersistedConversationRetry::class.java))
             when (persisted.kind) {
                 PersistedRetryKind.MESSAGE -> PendingConversationMessageRetry(
-                    body = persisted.body.orEmpty(),
+                    body = checkNotNull(persisted.body),
                     attachments = persisted.attachments,
-                    visibilityScope = persisted.visibilityScope ?: VisibilityScope.ALL_MEMBERS
+                    visibilityScope = persisted.visibilityScope ?: if (persisted.clientMessageId == null) VisibilityScope.ALL_MEMBERS
+                        else error("Missing persisted visibility"),
+                    clientMessageId = persisted.clientMessageId
                 )
 
                 PersistedRetryKind.ATTACHMENTS -> {
-                    val messageId = persisted.messageId ?: return@runCatching null
+                    val messageId = checkNotNull(persisted.messageId)
+                    check(messageId > 0)
                     PendingConversationAttachmentRetry(
                         messageId = messageId,
                         attachments = persisted.attachments
                     )
                 }
             }
-        }.getOrNull()
+        }.getOrElse { throw IllegalStateException("Persisted outgoing retry is invalid") }
     }
 
     override suspend fun saveMessageRetry(conversationId: Long, retry: PendingConversationMessageRetry) {
@@ -71,7 +81,8 @@ class SharedPreferencesConversationRetryStore internal constructor(
                 kind = PersistedRetryKind.MESSAGE,
                 body = retry.body,
                 attachments = retry.attachments,
-                visibilityScope = retry.visibilityScope
+                visibilityScope = retry.visibilityScope,
+                clientMessageId = retry.clientMessageId
             )
         )
     }
@@ -89,21 +100,28 @@ class SharedPreferencesConversationRetryStore internal constructor(
 
     override suspend fun clearRetry(conversationId: Long) {
         if (owner == null) return
-        editPreferences {
+        mutationLock.withLock { editPreferences {
             remove(retryKey(conversationId))
+        } }
+    }
+
+    override suspend fun clearRetryIfMatches(conversationId: Long, expected: PendingConversationRetry) {
+        if (owner == null) return
+        mutationLock.withLock {
+            if (loadRetry(conversationId) == expected) editPreferences { remove(retryKey(conversationId)) }
         }
     }
 
     private suspend fun saveRetry(conversationId: Long, retry: PersistedConversationRetry) {
-        if (owner == null) return
-        editPreferences {
+        check(owner != null) { "Verified outgoing owner is required" }
+        mutationLock.withLock { editPreferences {
             putString(retryKey(conversationId), gson.toJson(retry))
-        }
+        } }
     }
 
     private suspend fun editPreferences(block: SharedPreferences.Editor.() -> Unit) {
         withContext(Dispatchers.IO) {
-            preferences.edit().apply(block).commit()
+            check(preferences.edit().apply(block).commit()) { "Outgoing intent could not be persisted" }
         }
     }
 
@@ -115,7 +133,8 @@ private data class PersistedConversationRetry(
     val body: String? = null,
     val messageId: Long? = null,
     val attachments: List<LocalAttachmentDraft> = emptyList(),
-    val visibilityScope: VisibilityScope? = null
+    val visibilityScope: VisibilityScope? = null,
+    val clientMessageId: String? = null
 )
 
 private enum class PersistedRetryKind {

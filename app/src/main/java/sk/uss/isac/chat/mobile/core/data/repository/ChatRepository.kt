@@ -65,7 +65,7 @@ interface ChatRepository {
 
     suspend fun listMyApprovalCases(status: ApprovalStatus? = null): List<ApprovalCase>
 
-    suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage
+    suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String? = null): ChatMessage
 
     suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>)
 

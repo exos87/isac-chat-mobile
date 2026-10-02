@@ -280,7 +280,8 @@ data class UpdateConversationMemberRequestDto(
 
 data class SendMessageRequestDto(
     val body: String,
-    val visibilityScope: String
+    val visibilityScope: String,
+    val clientMessageId: String? = null
 )
 
 data class CreateApprovalCaseRequestDto(

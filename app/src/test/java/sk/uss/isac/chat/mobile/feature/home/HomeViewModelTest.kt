@@ -408,7 +408,7 @@ class HomeViewModelTest {
             pendingApprovalLoads += 1
             return pendingApprovals
         }
-        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope) = error("Not used")
+        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?) = error("Not used")
         override suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>) = Unit
         override suspend fun markMessageRead(messageId: Long) = Unit
         override suspend fun deleteMessage(messageId: Long) = Unit

@@ -53,6 +53,117 @@ class ConversationViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
 
+    private fun intentViewModel(repository: FakeChatRepository, retries: FakeConversationRetryStore) = ConversationViewModel(
+        CONVERSATION_ID, repository, FakeAppForegroundEvents(), FakeAppPushEvents(),
+        conversationDraftStore = FakeConversationDraftStore(), conversationRetryStore = retries
+    )
+
+    @Test fun `lost committed response retries one durable intent and one logical message`() = runTest {
+        val retries = FakeConversationRetryStore()
+        val repository = FakeChatRepository(lostResponsesRemaining = 1)
+        val viewModel = intentViewModel(repository, retries)
+        advanceUntilIdle()
+        viewModel.onComposerTextChanged("Same logical message")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        val first = repository.sentClientMessageIds.single()
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        assertEquals(1, repository.committedMessages.size)
+        org.junit.Assert.assertNotNull(first)
+        assertEquals(listOf(first, first), repository.sentClientMessageIds)
+    }
+
+    @Test fun `intent is durable before network and restored unchanged after recreation`() = runTest {
+        val retries = FakeConversationRetryStore()
+        val repository = FakeChatRepository(lostResponsesRemaining = 1, beforeSend = { key ->
+            assertEquals(key, (retries.retries[CONVERSATION_ID] as PendingConversationMessageRetry).clientMessageId)
+        })
+        val firstViewModel = intentViewModel(repository, retries)
+        advanceUntilIdle()
+        firstViewModel.onComposerTextChanged("Persist first")
+        firstViewModel.sendMessage()
+        advanceUntilIdle()
+        val original = repository.sentClientMessageIds.single()
+        val restored = intentViewModel(repository, retries)
+        advanceUntilIdle()
+        restored.sendMessage()
+        advanceUntilIdle()
+        assertEquals(listOf(original, original), repository.sentClientMessageIds)
+        assertEquals(1, repository.committedMessages.size)
+    }
+
+    @Test fun `persistence failure prevents the network side effect`() = runTest {
+        val repository = FakeChatRepository()
+        val viewModel = intentViewModel(repository, FakeConversationRetryStore(failSaves = true))
+        advanceUntilIdle()
+        viewModel.onComposerTextChanged("Must not send")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        assertEquals(0, repository.sendMessageCalls)
+        org.junit.Assert.assertNotNull(viewModel.uiState.value.error)
+    }
+
+    @Test fun `corrupt uncertain store blocks fresh sending without overwriting evidence`() = runTest {
+        val repository = FakeChatRepository()
+        val retries = FakeConversationRetryStore(failLoads = true)
+        val viewModel = intentViewModel(repository, retries); advanceUntilIdle()
+        viewModel.onComposerTextChanged("Must not overwrite"); viewModel.sendMessage(); advanceUntilIdle()
+        assertEquals(0, repository.sendMessageCalls)
+        assertEquals(0, retries.retries.size)
+        org.junit.Assert.assertNotNull(viewModel.uiState.value.error)
+    }
+
+    @Test fun `deliberate equal text second send gets a fresh intent`() = runTest {
+        val repository = FakeChatRepository()
+        val viewModel = intentViewModel(repository, FakeConversationRetryStore())
+        advanceUntilIdle()
+        repeat(2) { viewModel.onComposerTextChanged("Equal text"); viewModel.sendMessage(); advanceUntilIdle() }
+        assertEquals(2, repository.committedMessages.size)
+        org.junit.Assert.assertNotEquals(repository.sentClientMessageIds[0], repository.sentClientMessageIds[1])
+    }
+
+    @Test fun `uncertain request body and visibility remain immutable`() = runTest {
+        val repository = FakeChatRepository(lostResponsesRemaining = 1)
+        val viewModel = intentViewModel(repository, FakeConversationRetryStore())
+        advanceUntilIdle()
+        viewModel.onComposerTextChanged("Original"); viewModel.sendMessage(); advanceUntilIdle()
+        viewModel.onComposerTextChanged("Changed"); viewModel.onVisibilityScopeChanged(VisibilityScope.MASTER_ONLY)
+        assertEquals("Original", viewModel.uiState.value.composerText)
+        assertEquals(VisibilityScope.ALL_MEMBERS, viewModel.uiState.value.visibilityScope)
+        viewModel.sendMessage(); advanceUntilIdle()
+        assertEquals(listOf("Original", "Original"), repository.sentBodies)
+        assertEquals(1, repository.committedMessages.size)
+    }
+
+    @Test fun `legacy uncertain retry is quarantined until explicit concept clear`() = runTest {
+        val repository = FakeChatRepository()
+        val retries = FakeConversationRetryStore().apply {
+            this.retries[CONVERSATION_ID] = PendingConversationMessageRetry("Legacy", emptyList(), VisibilityScope.ALL_MEMBERS)
+        }
+        val viewModel = intentViewModel(repository, retries); advanceUntilIdle()
+        viewModel.sendMessage(); repository.emitRealtime(ChatRealtimeEvent.Connected); advanceUntilIdle()
+        assertEquals(0, repository.sendMessageCalls)
+        org.junit.Assert.assertNotNull(viewModel.uiState.value.error)
+        viewModel.onComposerTextChanged(""); advanceUntilIdle()
+        viewModel.onComposerTextChanged("Explicit new message"); viewModel.sendMessage(); advanceUntilIdle()
+        assertEquals(1, repository.sendMessageCalls)
+        org.junit.Assert.assertNotNull(repository.sentClientMessageIds.single())
+    }
+
+    @Test fun `delayed old cleanup cannot delete a newer uncertain intent`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val retries = FakeConversationRetryStore(clearGate = gate)
+        val repository = FakeChatRepository()
+        val viewModel = intentViewModel(repository, retries); advanceUntilIdle()
+        viewModel.onComposerTextChanged("Old"); viewModel.sendMessage(); advanceUntilIdle()
+        repository.lostResponsesRemaining = 1
+        viewModel.onComposerTextChanged("New"); viewModel.sendMessage(); advanceUntilIdle()
+        val newest = repository.sentClientMessageIds.last()
+        gate.complete(Unit); advanceUntilIdle()
+        assertEquals(newest, (retries.retries[CONVERSATION_ID] as PendingConversationMessageRetry).clientMessageId)
+    }
+
     @Test
     fun `same identity new login epoch invalidates outgoing intent even without null flow emission`() = runTest {
         val repository = FakeChatRepository(sendFailuresRemaining = 1)
@@ -549,7 +660,8 @@ class ConversationViewModelTest {
             PendingConversationMessageRetry(
                 body = "Test retry",
                 attachments = emptyList(),
-                visibilityScope = VisibilityScope.ALL_MEMBERS
+                visibilityScope = VisibilityScope.ALL_MEMBERS,
+                clientMessageId = repository.sentClientMessageIds.single()
             ),
             retryStore.retries[CONVERSATION_ID]
         )
@@ -731,7 +843,8 @@ class ConversationViewModelTest {
             retries[CONVERSATION_ID] = PendingConversationMessageRetry(
                 body = "Sprava na retry",
                 attachments = emptyList(),
-                visibilityScope = VisibilityScope.MASTER_ONLY
+                visibilityScope = VisibilityScope.MASTER_ONLY,
+                clientMessageId = "11111111-1111-1111-1111-111111111111"
             )
         }
 
@@ -826,12 +939,16 @@ class ConversationViewModelTest {
         }
     }
 
-    private class FakeConversationRetryStore : ConversationRetryStore {
+    private class FakeConversationRetryStore(var failSaves: Boolean = false, val clearGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null, val failLoads: Boolean = false) : ConversationRetryStore {
         val retries = mutableMapOf<Long, Any>()
 
-        override suspend fun loadRetry(conversationId: Long) = retries[conversationId] as? sk.uss.isac.chat.mobile.core.conversation.PendingConversationRetry
+        override suspend fun loadRetry(conversationId: Long): sk.uss.isac.chat.mobile.core.conversation.PendingConversationRetry? {
+            check(!failLoads) { "Persisted outgoing retry is invalid" }
+            return retries[conversationId] as? sk.uss.isac.chat.mobile.core.conversation.PendingConversationRetry
+        }
 
         override suspend fun saveMessageRetry(conversationId: Long, retry: PendingConversationMessageRetry) {
+            check(!failSaves) { "Persistence unavailable" }
             retries[conversationId] = retry
         }
 
@@ -842,6 +959,11 @@ class ConversationViewModelTest {
         override suspend fun clearRetry(conversationId: Long) {
             retries.remove(conversationId)
         }
+
+        override suspend fun clearRetryIfMatches(conversationId: Long, expected: sk.uss.isac.chat.mobile.core.conversation.PendingConversationRetry) {
+            clearGate?.await()
+            if (retries[conversationId] == expected) retries.remove(conversationId)
+        }
     }
 
     private class FakeChatRepository(
@@ -850,7 +972,9 @@ class ConversationViewModelTest {
         private val withApproval: Boolean = false,
         private val bundleLoadError: Throwable? = null,
         private var sendFailuresRemaining: Int = 0,
-        private var uploadFailuresRemaining: Int = 0
+        private var uploadFailuresRemaining: Int = 0,
+        var lostResponsesRemaining: Int = 0,
+        private val beforeSend: (String?) -> Unit = {}
     ) : ChatRepository {
         override val session = MutableStateFlow<UserSession?>(null)
         private val realtimeFlow = MutableSharedFlow<ChatRealtimeEvent>(extraBufferCapacity = 8)
@@ -860,6 +984,9 @@ class ConversationViewModelTest {
         val approvalDecisionCalls = mutableListOf<ApprovalDecisionCall>()
         var bundleLoads = 0
         var sendMessageCalls = 0
+        val sentClientMessageIds = mutableListOf<String?>()
+        val sentBodies = mutableListOf<String>()
+        val committedMessages = mutableMapOf<String, ChatMessage>()
 
         suspend fun emitRealtime(event: ChatRealtimeEvent) {
             realtimeFlow.emit(event)
@@ -922,13 +1049,16 @@ class ConversationViewModelTest {
 
         override suspend fun listMyApprovalCases(status: ApprovalStatus?): List<ApprovalCase> = emptyList()
 
-        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage {
+        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?): ChatMessage {
             sendMessageCalls += 1
+            beforeSend(clientMessageId)
+            sentClientMessageIds += clientMessageId
+            sentBodies += body
             if (sendFailuresRemaining > 0) {
                 sendFailuresRemaining -= 1
                 error("Connection refused")
             }
-            return ChatMessage(
+            val message = committedMessages.getOrPut(clientMessageId ?: "unkeyed-$sendMessageCalls") { ChatMessage(
                 id = 999L,
                 conversationId = conversationId,
                 senderSubject = CURRENT_SUBJECT,
@@ -939,7 +1069,12 @@ class ConversationViewModelTest {
                 createdAt = "2026-03-27T10:00:00Z",
                 deleted = false,
                 deletable = true
-            )
+            ) }
+            if (lostResponsesRemaining > 0) {
+                lostResponsesRemaining -= 1
+                error("Timeout after committed response was lost")
+            }
+            return message
         }
 
         override suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>) {

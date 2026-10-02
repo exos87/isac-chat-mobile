@@ -333,7 +333,7 @@ private class FakeChatRepository : ChatRepository {
 
     override suspend fun listMyApprovalCases(status: ApprovalStatus?): List<ApprovalCase> = emptyList()
 
-    override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage {
+    override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?): ChatMessage {
         error("Not used in test")
     }
 

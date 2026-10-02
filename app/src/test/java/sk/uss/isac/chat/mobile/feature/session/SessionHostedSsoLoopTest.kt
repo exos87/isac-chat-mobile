@@ -215,7 +215,7 @@ class SessionHostedSsoLoopTest {
         override suspend fun listDirectoryUsers(query: String?): List<DirectoryUser> = emptyList()
         override suspend fun loadConversationBundle(conversationId: Long): ConversationBundle = error("Not used")
         override suspend fun listMyApprovalCases(status: ApprovalStatus?): List<ApprovalCase> = emptyList()
-        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage = error("Not used")
+        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?): ChatMessage = error("Not used")
         override suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>) = Unit
         override suspend fun markMessageRead(messageId: Long) = Unit
         override suspend fun deleteMessage(messageId: Long) = Unit

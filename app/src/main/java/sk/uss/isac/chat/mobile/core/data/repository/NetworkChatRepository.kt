@@ -273,11 +273,11 @@ class NetworkChatRepository(
         return chatApi.listMyApprovalCases(url("/chat/approvals/my"), status?.name).map { it.toDomain() }
     }
 
-    override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage {
+    override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?): ChatMessage {
         val captured = requireCurrentSession()
         return chatApi.sendMessage(
             captured.baseUrl.trimEnd('/') + "/chat/conversations/$conversationId/messages",
-            SendMessageRequestDto(body = body, visibilityScope = visibilityScope.name),
+            SendMessageRequestDto(body = body, visibilityScope = visibilityScope.name, clientMessageId = clientMessageId),
             OutgoingSessionFence(captured)
         ).toDomain()
     }

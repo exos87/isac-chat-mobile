@@ -1,4 +1,4 @@
-﻿package sk.uss.isac.chat.mobile.feature.conversation
+package sk.uss.isac.chat.mobile.feature.conversation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -95,7 +95,8 @@ private sealed interface PendingOutgoingWork
 private data class PendingOutgoingMessageDraft(
     val body: String,
     val attachments: List<LocalAttachmentDraft>,
-    val visibilityScope: VisibilityScope
+    val visibilityScope: VisibilityScope,
+    val clientMessageId: String
 ) : PendingOutgoingWork
 
 private data class PendingAttachmentUploadDraft(
@@ -141,6 +142,9 @@ class ConversationViewModel(
     private val acknowledgedReadMessageIds = mutableSetOf<Long>()
     private val readReceiptInFlightIds = mutableSetOf<Long>()
     private var queuedOutgoingWork: PendingOutgoingWork? = null
+    private var retryRestoreComplete = false
+    private var legacyRetryQuarantined = false
+    private var persistedRetrySnapshot: sk.uss.isac.chat.mobile.core.conversation.PendingConversationRetry? = null
     private var scheduledSilentRefresh: Job? = null
     private var scheduledSilentRefreshIncludesDirectory = false
 
@@ -171,7 +175,7 @@ class ConversationViewModel(
                     is ChatRealtimeEvent.ApprovalsInvalidated -> scheduleSilentRefresh(includeDirectory = true)
 
                     ChatRealtimeEvent.Connected -> {
-                        _uiState.update { it.copy(isRealtimeConnected = true, error = null) }
+                        _uiState.update { it.copy(isRealtimeConnected = true, error = if (legacyRetryQuarantined || !retryRestoreComplete) it.error else null) }
                         scheduleSilentRefresh(includeDirectory = true)
                         retryQueuedMessageIfNeeded()
                     }
@@ -298,12 +302,17 @@ class ConversationViewModel(
     }
 
     fun onComposerTextChanged(value: String) {
+        if (!retryRestoreComplete || legacyRetryQuarantined && value.isNotBlank()) return
+        if (uiState.value.isSending || queuedOutgoingWork is PendingOutgoingMessageDraft) return
+        if (legacyRetryQuarantined && value.isBlank()) legacyRetryQuarantined = false
         clearQueuedMessageRetry()
         _uiState.update { it.copy(composerText = value) }
         persistDraft()
     }
 
     fun addPendingAttachments(attachments: List<LocalAttachmentDraft>) {
+        if (!retryRestoreComplete) return
+        if (uiState.value.isSending || queuedOutgoingWork is PendingOutgoingMessageDraft || legacyRetryQuarantined) return
         if (attachments.isEmpty()) {
             return
         }
@@ -346,6 +355,8 @@ class ConversationViewModel(
     }
 
     fun removePendingAttachment(uri: String) {
+        if (!retryRestoreComplete) return
+        if (uiState.value.isSending || queuedOutgoingWork is PendingOutgoingMessageDraft || legacyRetryQuarantined) return
         clearQueuedMessageRetry()
         _uiState.update { state ->
             state.copy(
@@ -357,6 +368,8 @@ class ConversationViewModel(
     }
 
     fun onVisibilityScopeChanged(scope: VisibilityScope) {
+        if (!retryRestoreComplete) return
+        if (uiState.value.isSending || queuedOutgoingWork is PendingOutgoingMessageDraft || legacyRetryQuarantined) return
         clearQueuedMessageRetry()
         _uiState.update { it.copy(visibilityScope = scope) }
         persistDraft()
@@ -444,6 +457,12 @@ class ConversationViewModel(
 
     fun sendMessage() {
         if (!ownsOutgoingWork()) return
+        if (!retryRestoreComplete || legacyRetryQuarantined) return
+        if (uiState.value.isSending || outgoingJob?.isActive == true) return
+        if (queuedOutgoingWork != null) {
+            retryQueuedMessageIfNeeded()
+            return
+        }
         val snapshot = uiState.value
         if (snapshot.composerText.isBlank() && snapshot.pendingAttachments.isEmpty()) {
             return
@@ -453,7 +472,8 @@ class ConversationViewModel(
             PendingOutgoingMessageDraft(
                 body = snapshot.composerText,
                 attachments = snapshot.pendingAttachments,
-                visibilityScope = snapshot.visibilityScope
+                visibilityScope = snapshot.visibilityScope,
+                clientMessageId = java.util.UUID.randomUUID().toString()
             )
         )
     }
@@ -472,10 +492,17 @@ class ConversationViewModel(
             if (!ownsOutgoingWork()) return@launch
             _uiState.update { it.copy(isSending = true, error = null) }
             runCatching {
+                val pending = PendingConversationMessageRetry(
+                    draft.body, draft.attachments, draft.visibilityScope, draft.clientMessageId
+                )
+                conversationRetryStore.saveMessageRetry(conversationId, pending)
+                persistedRetrySnapshot = pending
+                check(ownsOutgoingWork()) { "Outgoing session owner changed" }
                 repository.sendMessage(
                     conversationId = conversationId,
                     body = body,
-                    visibilityScope = draft.visibilityScope
+                    visibilityScope = draft.visibilityScope,
+                    clientMessageId = draft.clientMessageId
                 )
             }.onSuccess { message: sk.uss.isac.chat.mobile.core.data.model.ChatMessage ->
                 if (!ownsOutgoingWork()) return@launch
@@ -577,7 +604,6 @@ class ConversationViewModel(
                         )
                     }
                     persistDraft(draft)
-                    persistMessageRetry(draft)
                 } else {
                     _uiState.update {
                         it.copy(
@@ -691,6 +717,7 @@ class ConversationViewModel(
         viewModelScope.launch {
             val draft = conversationDraftStore.loadDraft(conversationId) ?: return@launch
             if (!ownsOutgoingWork()) return@launch
+            if (queuedOutgoingWork is PendingOutgoingMessageDraft) return@launch
             _uiState.update { state ->
                 state.copy(
                     composerText = draft.composerText,
@@ -703,19 +730,33 @@ class ConversationViewModel(
 
     private fun restoreRetryWork() {
         viewModelScope.launch {
-            val retry = conversationRetryStore.loadRetry(conversationId)
+            val retry = runCatching { conversationRetryStore.loadRetry(conversationId) }.getOrElse {
+                _uiState.update { state -> state.copy(error = "Nepotvrdený pokus sa nepodarilo načítať. Odoslanie je pozastavené.") }
+                return@launch
+            }
             if (!ownsOutgoingWork()) return@launch
+            retryRestoreComplete = true
+            persistedRetrySnapshot = retry
             when (retry) {
                 is PendingConversationMessageRetry -> {
+                    val clientMessageId = retry.clientMessageId?.takeIf { value ->
+                        runCatching { java.util.UUID.fromString(value).toString() == value }.getOrDefault(false)
+                    }
+                    if (clientMessageId == null) {
+                        legacyRetryQuarantined = true
+                        _uiState.update { it.copy(error = "Starý neistý pokus nebol zopakovaný. Overte konverzáciu a pred novou správou vymažte koncept.") }
+                        return@launch
+                    }
                     queuedOutgoingWork = PendingOutgoingMessageDraft(
                         body = retry.body,
                         attachments = retry.attachments,
-                        visibilityScope = retry.visibilityScope
+                        visibilityScope = retry.visibilityScope,
+                        clientMessageId = clientMessageId
                     )
                     _uiState.update { state ->
                         state.copy(
-                            composerText = if (state.composerText.isBlank()) retry.body else state.composerText,
-                            pendingAttachments = if (state.pendingAttachments.isEmpty()) retry.attachments else state.pendingAttachments,
+                            composerText = retry.body,
+                            pendingAttachments = retry.attachments,
                             visibilityScope = retry.visibilityScope,
                             hasQueuedMessageRetry = true,
                             queuedRetryKind = QueuedRetryKind.MESSAGE
@@ -780,37 +821,21 @@ class ConversationViewModel(
         }
     }
 
-    private fun persistMessageRetry(draft: PendingOutgoingMessageDraft) {
-        viewModelScope.launch {
-            if (!ownsOutgoingWork()) return@launch
-            conversationRetryStore.saveMessageRetry(
-                conversationId = conversationId,
-                retry = PendingConversationMessageRetry(
-                    body = draft.body,
-                    attachments = draft.attachments,
-                    visibilityScope = draft.visibilityScope
-                )
-            )
-        }
-    }
-
-    private fun persistAttachmentRetry(draft: PendingAttachmentUploadDraft) {
-        viewModelScope.launch {
-            if (!ownsOutgoingWork()) return@launch
-            conversationRetryStore.saveAttachmentRetry(
-                conversationId = conversationId,
-                retry = PendingConversationAttachmentRetry(
-                    messageId = draft.messageId,
-                    attachments = draft.attachments
-                )
-            )
-        }
+    private suspend fun persistAttachmentRetry(draft: PendingAttachmentUploadDraft) {
+            if (!ownsOutgoingWork()) return
+            val pending = PendingConversationAttachmentRetry(draft.messageId, draft.attachments)
+            runCatching { conversationRetryStore.saveAttachmentRetry(conversationId, pending) }
+                .onSuccess { persistedRetrySnapshot = pending }
+                .onFailure { _uiState.update { state -> state.copy(error = "Nepotvrdený pokus sa nepodarilo uložiť.") } }
     }
 
     private fun clearPersistedRetry() {
+        val expected = persistedRetrySnapshot ?: return
         viewModelScope.launch {
             if (!ownsOutgoingWork()) return@launch
-            conversationRetryStore.clearRetry(conversationId)
+            runCatching { conversationRetryStore.clearRetryIfMatches(conversationId, expected) }
+                .onSuccess { if (persistedRetrySnapshot == expected) persistedRetrySnapshot = null }
+                .onFailure { _uiState.update { state -> state.copy(error = "Potvrdený pokus sa nepodarilo odstrániť; opakovanie zostáva bezpečne viazané na pôvodný kľúč.") } }
         }
     }
 
@@ -1155,7 +1180,7 @@ class ConversationViewModel(
             _uiState.update {
                 it.copy(
                     isLoading = true,
-                    error = null,
+                    error = if (legacyRetryQuarantined || !retryRestoreComplete) it.error else null,
                     currentSubject = repository.currentSubject(),
                     hasLeftConversation = false
                 )
@@ -1163,7 +1188,7 @@ class ConversationViewModel(
         } else {
             _uiState.update {
                 it.copy(
-                    error = null,
+                    error = if (legacyRetryQuarantined || !retryRestoreComplete) it.error else null,
                     currentSubject = repository.currentSubject(),
                     hasLeftConversation = false
                 )

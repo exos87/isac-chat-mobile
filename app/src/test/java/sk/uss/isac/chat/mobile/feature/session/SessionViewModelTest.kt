@@ -348,7 +348,7 @@ class SessionViewModelTest {
 
         override suspend fun listMyApprovalCases(status: ApprovalStatus?): List<ApprovalCase> = emptyList()
 
-        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage =
+        override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope, clientMessageId: String?): ChatMessage =
             error("Not used in test")
 
         override suspend fun uploadMessageAttachments(messageId: Long, attachments: List<LocalAttachmentDraft>) = Unit
