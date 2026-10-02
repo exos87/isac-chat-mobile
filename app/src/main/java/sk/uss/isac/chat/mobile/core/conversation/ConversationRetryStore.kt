@@ -22,21 +22,26 @@ data class PendingConversationAttachmentRetry(
 ) : PendingConversationRetry
 
 interface ConversationRetryStore {
+    fun forOwner(owner: String?): ConversationRetryStore = this
     suspend fun loadRetry(conversationId: Long): PendingConversationRetry?
     suspend fun saveMessageRetry(conversationId: Long, retry: PendingConversationMessageRetry)
     suspend fun saveAttachmentRetry(conversationId: Long, retry: PendingConversationAttachmentRetry)
     suspend fun clearRetry(conversationId: Long)
 }
 
-class SharedPreferencesConversationRetryStore(
-    context: Context,
-    private val gson: Gson
+class SharedPreferencesConversationRetryStore internal constructor(
+    private val preferences: SharedPreferences,
+    private val gson: Gson,
+    private val owner: String? = null
 ) : ConversationRetryStore {
-    private val appContext = context.applicationContext
-    private val preferences: SharedPreferences =
-        appContext.getSharedPreferences("conversation_retries", Context.MODE_PRIVATE)
+    constructor(context: Context, gson: Gson) : this(
+        context.applicationContext.getSharedPreferences("conversation_retries", Context.MODE_PRIVATE), gson
+    )
+
+    override fun forOwner(owner: String?): ConversationRetryStore = SharedPreferencesConversationRetryStore(preferences, gson, owner)
 
     override suspend fun loadRetry(conversationId: Long): PendingConversationRetry? {
+        if (owner == null) return null
         val raw = preferences.getString(retryKey(conversationId), null)?.trim()?.ifBlank { null }
             ?: return null
         return runCatching {
@@ -83,12 +88,14 @@ class SharedPreferencesConversationRetryStore(
     }
 
     override suspend fun clearRetry(conversationId: Long) {
+        if (owner == null) return
         editPreferences {
             remove(retryKey(conversationId))
         }
     }
 
     private suspend fun saveRetry(conversationId: Long, retry: PersistedConversationRetry) {
+        if (owner == null) return
         editPreferences {
             putString(retryKey(conversationId), gson.toJson(retry))
         }
@@ -100,7 +107,7 @@ class SharedPreferencesConversationRetryStore(
         }
     }
 
-    private fun retryKey(conversationId: Long): String = "conversation_retry_$conversationId"
+    private fun retryKey(conversationId: Long): String = "conversation_retry_v2_${owner}_$conversationId"
 }
 
 private data class PersistedConversationRetry(

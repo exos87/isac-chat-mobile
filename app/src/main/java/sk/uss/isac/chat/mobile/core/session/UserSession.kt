@@ -7,5 +7,6 @@ data class UserSession(
     val refreshToken: String? = null,
     val accessTokenExpiresAtEpochMillis: Long? = null,
     val profileApiUrl: String,
-    val xApiType: String
+    val xApiType: String,
+    val sessionEpoch: Long = 0
 )

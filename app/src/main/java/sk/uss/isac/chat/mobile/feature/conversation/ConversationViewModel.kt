@@ -37,6 +37,7 @@ import sk.uss.isac.chat.mobile.core.data.model.MessageType
 import sk.uss.isac.chat.mobile.core.data.model.VisibilityScope
 import sk.uss.isac.chat.mobile.core.data.repository.ChatRepository
 import sk.uss.isac.chat.mobile.core.network.ChatRealtimeEvent
+import sk.uss.isac.chat.mobile.core.session.localOwnerKey
 import sk.uss.isac.chat.mobile.core.session.UserSession
 
 enum class ConversationPane {
@@ -108,13 +109,34 @@ class ConversationViewModel(
     appForegroundEvents: AppForegroundEvents,
     appPushEvents: AppPushEvents,
     networkConnectivityObserver: NetworkConnectivityObserver = AlwaysConnectedNetworkConnectivityObserver,
-    private val conversationDraftStore: ConversationDraftStore,
-    private val conversationRetryStore: ConversationRetryStore,
+    conversationDraftStore: ConversationDraftStore,
+    conversationRetryStore: ConversationRetryStore,
     initialMessageId: Long? = null,
     initialAttachmentId: Long? = null,
     initialApprovalCaseId: Long? = null,
     initialPane: ConversationPane? = null
 ) : ViewModel() {
+    private val initialOwner = repository.currentSession()?.localOwnerKey()
+    private val initialSession = repository.currentSession()
+    private var outgoingOwnerInvalidated = false
+    private var outgoingJob: Job? = null
+    private val conversationDraftStore = conversationDraftStore.forOwner(initialOwner)
+    private val conversationRetryStore = conversationRetryStore.forOwner(initialOwner)
+
+    private fun ownsOutgoingWork(): Boolean {
+        val current = repository.currentSession()
+        val sameOwner = !outgoingOwnerInvalidated && current?.sessionEpoch == initialSession?.sessionEpoch && if (initialOwner != null) current?.localOwnerKey() == initialOwner
+            else current == initialSession
+        if (!sameOwner) {
+            outgoingOwnerInvalidated = true
+            outgoingJob?.cancel()
+            queuedOutgoingWork = null
+            _uiState.update { it.copy(composerText = "", pendingAttachments = emptyList(),
+                hasQueuedMessageRetry = false, queuedRetryKind = null, isSending = false) }
+        }
+        return sameOwner
+    }
+
     private var scrollToBottomAfterRefresh = false
     private val acknowledgedReadMessageIds = mutableSetOf<Long>()
     private val readReceiptInFlightIds = mutableSetOf<Long>()
@@ -136,6 +158,9 @@ class ConversationViewModel(
     val openExternalUrlEvents: SharedFlow<String> = _openExternalUrlEvents.asSharedFlow()
 
     init {
+        viewModelScope.launch {
+            repository.session.collect { ownsOutgoingWork() }
+        }
         restoreDraft()
         restoreRetryWork()
         refresh()
@@ -418,6 +443,7 @@ class ConversationViewModel(
     }
 
     fun sendMessage() {
+        if (!ownsOutgoingWork()) return
         val snapshot = uiState.value
         if (snapshot.composerText.isBlank() && snapshot.pendingAttachments.isEmpty()) {
             return
@@ -442,7 +468,8 @@ class ConversationViewModel(
         val snapshot = object {
             val pendingAttachments = draft.attachments
         }
-        viewModelScope.launch {
+        outgoingJob = viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             _uiState.update { it.copy(isSending = true, error = null) }
             runCatching {
                 repository.sendMessage(
@@ -451,10 +478,12 @@ class ConversationViewModel(
                     visibilityScope = draft.visibilityScope
                 )
             }.onSuccess { message: sk.uss.isac.chat.mobile.core.data.model.ChatMessage ->
+                if (!ownsOutgoingWork()) return@launch
                 if (snapshot.pendingAttachments.isNotEmpty()) {
                     runCatching {
                         repository.uploadMessageAttachments(message.id, snapshot.pendingAttachments)
                     }.onSuccess {
+                        if (!ownsOutgoingWork()) return@launch
                         queuedOutgoingWork = null
                         scrollToBottomAfterRefresh = true
                         _uiState.update {
@@ -471,6 +500,7 @@ class ConversationViewModel(
                         clearPersistedRetry()
                         refresh()
                     }.onFailure { uploadError ->
+                        if (!ownsOutgoingWork()) return@launch
                         if (isRecoverableSendFailure(uploadError)) {
                             queuedOutgoingWork = PendingAttachmentUploadDraft(
                                 messageId = message.id,
@@ -533,6 +563,7 @@ class ConversationViewModel(
                     refresh()
                 }
             }.onFailure { error ->
+                if (!ownsOutgoingWork()) return@launch
                 if (isRecoverableSendFailure(error)) {
                     queuedOutgoingWork = draft
                     _uiState.update {
@@ -562,6 +593,7 @@ class ConversationViewModel(
     }
 
     private fun retryQueuedMessageIfNeeded() {
+        if (!ownsOutgoingWork()) return
         val queuedWork = queuedOutgoingWork ?: return
         if (uiState.value.isSending) {
             return
@@ -604,11 +636,13 @@ class ConversationViewModel(
     }
 
     private fun retryQueuedAttachmentUpload(draft: PendingAttachmentUploadDraft) {
-        viewModelScope.launch {
+        outgoingJob = viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             _uiState.update { it.copy(isSending = true, error = null) }
             runCatching {
                 repository.uploadMessageAttachments(draft.messageId, draft.attachments)
             }.onSuccess {
+                if (!ownsOutgoingWork()) return@launch
                 queuedOutgoingWork = null
                 _uiState.update {
                     it.copy(
@@ -622,6 +656,7 @@ class ConversationViewModel(
                 clearPersistedRetry()
                 refresh()
             }.onFailure { error ->
+                if (!ownsOutgoingWork()) return@launch
                 if (isRecoverableSendFailure(error)) {
                     queuedOutgoingWork = draft
                     _uiState.update {
@@ -655,6 +690,7 @@ class ConversationViewModel(
     private fun restoreDraft() {
         viewModelScope.launch {
             val draft = conversationDraftStore.loadDraft(conversationId) ?: return@launch
+            if (!ownsOutgoingWork()) return@launch
             _uiState.update { state ->
                 state.copy(
                     composerText = draft.composerText,
@@ -667,7 +703,9 @@ class ConversationViewModel(
 
     private fun restoreRetryWork() {
         viewModelScope.launch {
-            when (val retry = conversationRetryStore.loadRetry(conversationId)) {
+            val retry = conversationRetryStore.loadRetry(conversationId)
+            if (!ownsOutgoingWork()) return@launch
+            when (retry) {
                 is PendingConversationMessageRetry -> {
                     queuedOutgoingWork = PendingOutgoingMessageDraft(
                         body = retry.body,
@@ -709,6 +747,7 @@ class ConversationViewModel(
 
     private fun persistDraft(state: ConversationUiState) {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationDraftStore.saveDraft(
                 conversationId = conversationId,
                 draft = ConversationDraftState(
@@ -722,6 +761,7 @@ class ConversationViewModel(
 
     private fun persistDraft(draft: PendingOutgoingMessageDraft) {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationDraftStore.saveDraft(
                 conversationId = conversationId,
                 draft = ConversationDraftState(
@@ -735,12 +775,14 @@ class ConversationViewModel(
 
     private fun clearPersistedDraft() {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationDraftStore.clearDraft(conversationId)
         }
     }
 
     private fun persistMessageRetry(draft: PendingOutgoingMessageDraft) {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationRetryStore.saveMessageRetry(
                 conversationId = conversationId,
                 retry = PendingConversationMessageRetry(
@@ -754,6 +796,7 @@ class ConversationViewModel(
 
     private fun persistAttachmentRetry(draft: PendingAttachmentUploadDraft) {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationRetryStore.saveAttachmentRetry(
                 conversationId = conversationId,
                 retry = PendingConversationAttachmentRetry(
@@ -766,6 +809,7 @@ class ConversationViewModel(
 
     private fun clearPersistedRetry() {
         viewModelScope.launch {
+            if (!ownsOutgoingWork()) return@launch
             conversationRetryStore.clearRetry(conversationId)
         }
     }

@@ -60,3 +60,33 @@ Pre Play Store:
 Poznamky:
 - `keystore.properties` aj `.jks` subory su ignorovane v gite.
 - Vygenerovany lokalny keystore je vhodny pre interne testovanie. Pre Google Play produkciu odporucam samostatny dlhodoby release keystore, ktory budes bezpecne zalohovat mimo repozitara.
+
+
+## Local ownership and authentication regression runbook (2026-10-02)
+
+Run the lightweight developer flavor JVM suite in an isolated checkout:
+
+```powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA/Android/Sdk"
+./gradlew.bat :app:testUseitacDevDebugUnitTest --no-daemon --max-workers=1 '-Dorg.gradle.jvmargs=-Xmx768m -Dfile.encoding=UTF-8' '-Pkotlin.compiler.execution.strategy=in-process'
+```
+
+The ignored `app/src/useitacDev/google-services.json` flavor configuration must be present;
+reuse the existing local configuration without putting it into Git. Excluding the Google Services
+task with `-x` does not work: the generated-resource provider is queried before task completion.
+
+Local acceptance covers persisted draft/retry isolation between accounts, tenants and deployments,
+legacy records without ownership ignored, retry restoration for the same owner, logout/reconnect
+invalidation, captured-request ownership, explicit bootstrap headers, destination path boundaries,
+authorization on every preview fetch, changed preview content and denied previews, and authentication
+clients excluding inherited sensitive loggers. Preview files are private cache artifacts; logout and
+identity switches clear that cache without deleting exported attachments. Tokens without a usable
+subject, issuer and one unambiguous tenant claim do not get persisted outgoing state or previews.
+Realm-only tokens without an explicit tenant claim retain live chat but lose local draft/retry restoration
+and attachment previews until the token contract supplies tenant identity. Local owner claims partition
+storage only; server authentication remains responsible for verifying JWT signatures and permissions.
+
+The original key/header/logger rules reproduced four failing tests in the targeted negative run;
+restored fixes pass the full JVM suite. These checks do not establish Android device lifecycle,
+backup behavior, Firebase delivery, release signing, or customer runtime acceptance. Message retry
+idempotency still needs a coordinated server/client contract before F-MOB-04 can be closed.

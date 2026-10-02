@@ -3,7 +3,6 @@ package sk.uss.isac.chat.mobile.app
 import android.content.Context
 import com.google.gson.Gson
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import sk.uss.isac.chat.mobile.BuildConfig
@@ -44,15 +43,6 @@ class AppGraph(context: Context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(ApiHeadersInterceptor(sessionStore))
         .addInterceptor(AuthInterceptor(sessionStore))
-        .addInterceptor(
-            HttpLoggingInterceptor().apply {
-                level = if (BuildConfig.DEBUG) {
-                    HttpLoggingInterceptor.Level.BODY
-                } else {
-                    HttpLoggingInterceptor.Level.NONE
-                }
-            }
-        )
         .build()
 
     private val retrofit: Retrofit = Retrofit.Builder()

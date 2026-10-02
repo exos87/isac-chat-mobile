@@ -15,20 +15,25 @@ data class ConversationDraftState(
 )
 
 interface ConversationDraftStore {
+    fun forOwner(owner: String?): ConversationDraftStore = this
     suspend fun loadDraft(conversationId: Long): ConversationDraftState?
     suspend fun saveDraft(conversationId: Long, draft: ConversationDraftState)
     suspend fun clearDraft(conversationId: Long)
 }
 
-class SharedPreferencesConversationDraftStore(
-    context: Context,
-    private val gson: Gson
+class SharedPreferencesConversationDraftStore internal constructor(
+    private val preferences: SharedPreferences,
+    private val gson: Gson,
+    private val owner: String? = null
 ) : ConversationDraftStore {
-    private val appContext = context.applicationContext
-    private val preferences: SharedPreferences =
-        appContext.getSharedPreferences("conversation_drafts", Context.MODE_PRIVATE)
+    constructor(context: Context, gson: Gson) : this(
+        context.applicationContext.getSharedPreferences("conversation_drafts", Context.MODE_PRIVATE), gson
+    )
+
+    override fun forOwner(owner: String?): ConversationDraftStore = SharedPreferencesConversationDraftStore(preferences, gson, owner)
 
     override suspend fun loadDraft(conversationId: Long): ConversationDraftState? {
+        if (owner == null) return null
         val raw = preferences.getString(draftKey(conversationId), null)?.trim()?.ifBlank { null }
             ?: return null
         return runCatching {
@@ -46,12 +51,14 @@ class SharedPreferencesConversationDraftStore(
             clearDraft(conversationId)
             return
         }
+        if (owner == null) return
         editPreferences {
             putString(draftKey(conversationId), gson.toJson(normalizedDraft))
         }
     }
 
     override suspend fun clearDraft(conversationId: Long) {
+        if (owner == null) return
         editPreferences {
             remove(draftKey(conversationId))
         }
@@ -63,5 +70,5 @@ class SharedPreferencesConversationDraftStore(
         }
     }
 
-    private fun draftKey(conversationId: Long): String = "conversation_draft_$conversationId"
+    private fun draftKey(conversationId: Long): String = "conversation_draft_v2_${owner}_$conversationId"
 }

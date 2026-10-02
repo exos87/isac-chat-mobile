@@ -54,6 +54,57 @@ class ConversationViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun `same identity new login epoch invalidates outgoing intent even without null flow emission`() = runTest {
+        val repository = FakeChatRepository(sendFailuresRemaining = 1)
+        val a = UserSession("https://one.example/chat/", "wss://one.example/chat/ws", "opaque-A",
+            profileApiUrl = "https://one.example/backend", xApiType = "private", sessionEpoch = 1)
+        repository.session.value = a
+        val viewModel = ConversationViewModel(CONVERSATION_ID, repository,
+            FakeAppForegroundEvents(), FakeAppPushEvents(), conversationDraftStore = FakeConversationDraftStore(),
+            conversationRetryStore = FakeConversationRetryStore())
+        advanceUntilIdle()
+        viewModel.onComposerTextChanged("private A")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        repository.session.value = a.copy(sessionEpoch = 3)
+        repository.emitRealtime(ChatRealtimeEvent.Connected)
+        advanceUntilIdle()
+        assertEquals(1, repository.sendMessageCalls)
+        assertEquals("", viewModel.uiState.value.composerText)
+        assertEquals(false, viewModel.uiState.value.hasQueuedMessageRetry)
+    }
+
+    @Test
+    fun `logout or identity switch discards queued outgoing work before reconnect`() = runTest {
+        val repository = FakeChatRepository(sendFailuresRemaining = 1)
+        val a = UserSession("https://one.example/chat/", "wss://one.example/chat/ws", "opaque-A",
+            profileApiUrl = "https://one.example/backend", xApiType = "private")
+        repository.session.value = a
+        val viewModel = ConversationViewModel(CONVERSATION_ID, repository,
+            FakeAppForegroundEvents(), FakeAppPushEvents(), conversationDraftStore = FakeConversationDraftStore(),
+            conversationRetryStore = FakeConversationRetryStore())
+        advanceUntilIdle()
+        viewModel.onComposerTextChanged("private A")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        assertEquals(1, repository.sendMessageCalls)
+        assertEquals(true, viewModel.uiState.value.hasQueuedMessageRetry)
+        repository.session.value = null
+        advanceUntilIdle()
+        repository.session.value = a.copy(accessToken = "opaque-B")
+        repository.emitRealtime(ChatRealtimeEvent.Connected)
+        advanceUntilIdle()
+        assertEquals(1, repository.sendMessageCalls)
+        assertEquals("", viewModel.uiState.value.composerText)
+        assertEquals(false, viewModel.uiState.value.hasQueuedMessageRetry)
+        // Returning to A does not revive work in the old view model.
+        repository.session.value = a
+        repository.emitRealtime(ChatRealtimeEvent.Connected)
+        advanceUntilIdle()
+        assertEquals(1, repository.sendMessageCalls)
+    }
+
+    @Test
     fun `initial load requests scroll to the end of the conversation`() = runTest {
         val repository = FakeChatRepository()
         val foregroundEvents = FakeAppForegroundEvents()
@@ -801,7 +852,7 @@ class ConversationViewModelTest {
         private var sendFailuresRemaining: Int = 0,
         private var uploadFailuresRemaining: Int = 0
     ) : ChatRepository {
-        override val session: StateFlow<UserSession?> = MutableStateFlow(null)
+        override val session = MutableStateFlow<UserSession?>(null)
         private val realtimeFlow = MutableSharedFlow<ChatRealtimeEvent>(extraBufferCapacity = 8)
         override val realtimeEvents: Flow<ChatRealtimeEvent> = realtimeFlow
         val markReadCalls = mutableListOf<Long>()
@@ -849,7 +900,7 @@ class ConversationViewModelTest {
 
         override suspend fun clearSession() = Unit
 
-        override fun currentSession(): UserSession? = null
+        override fun currentSession(): UserSession? = session.value
 
         override fun currentSubject(): String = CURRENT_SUBJECT
 

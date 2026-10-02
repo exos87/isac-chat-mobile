@@ -20,6 +20,7 @@ class SessionStore(context: Context) {
     private val preferences: SharedPreferences =
         appContext.getSharedPreferences("session", Context.MODE_PRIVATE)
 
+    private val sessionEpoch = java.util.concurrent.atomic.AtomicLong()
     private val _session = MutableStateFlow<UserSession?>(null)
     val session: StateFlow<UserSession?> = _session.asStateFlow()
 
@@ -38,6 +39,7 @@ class SessionStore(context: Context) {
         profileApiUrl: String = BuildConfig.PROFILE_API_URL,
         xApiType: String = BuildConfig.X_API_TYPE
     ) {
+        val previousOwner = currentSession()?.localOwnerKey()
         secureSessionSecretsStore.saveSessionSecrets(
             accessToken = accessToken,
             refreshToken = refreshToken
@@ -55,10 +57,17 @@ class SessionStore(context: Context) {
             putString(Keys.ProfileApiUrl, profileApiUrl.trim().ensureTrailingSlashIfPresent())
             putString(Keys.XApiType, xApiType.trim())
         }
+        sessionEpoch.incrementAndGet()
+        if (previousOwner != preferencesToSession(preferences)?.localOwnerKey()) {
+            java.io.File(appContext.cacheDir, "attachment-previews").deleteRecursively()
+        }
         publishCurrentSession()
     }
 
     suspend fun clearSession() {
+        sessionEpoch.incrementAndGet()
+        _session.value = null
+        java.io.File(appContext.cacheDir, "attachment-previews").deleteRecursively()
         secureSessionSecretsStore.clearSessionSecrets()
         editPreferences { clear() }
         publishCurrentSession()
@@ -124,7 +133,8 @@ class SessionStore(context: Context) {
             refreshToken = refreshToken,
             accessTokenExpiresAtEpochMillis = accessTokenExpiresAtEpochMillis,
             profileApiUrl = profileApiUrl.ensureTrailingSlashIfPresent(),
-            xApiType = xApiType
+            xApiType = xApiType,
+            sessionEpoch = sessionEpoch.get()
         )
     }
 

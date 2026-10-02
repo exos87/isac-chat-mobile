@@ -51,7 +51,10 @@ class SessionPasswordAuthenticatorTest {
         )
 
         val authenticator = SessionPasswordAuthenticator(
-            baseClient = OkHttpClient(),
+            baseClient = OkHttpClient.Builder().addInterceptor(
+                okhttp3.logging.HttpLoggingInterceptor { throw AssertionError("Bootstrap reached inherited sensitive logger") }
+                    .apply { level = okhttp3.logging.HttpLoggingInterceptor.Level.BODY }
+            ).build(),
             gson = Gson()
         )
 
@@ -90,7 +93,10 @@ class SessionPasswordAuthenticatorTest {
         )
 
         val authenticator = SessionPasswordAuthenticator(
-            baseClient = OkHttpClient(),
+            baseClient = OkHttpClient.Builder().addInterceptor(
+                okhttp3.logging.HttpLoggingInterceptor { throw AssertionError("Bootstrap reached inherited sensitive logger") }
+                    .apply { level = okhttp3.logging.HttpLoggingInterceptor.Level.BODY }
+            ).build(),
             gson = Gson()
         )
 

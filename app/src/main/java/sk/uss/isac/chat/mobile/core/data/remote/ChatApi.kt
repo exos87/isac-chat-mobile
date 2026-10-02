@@ -58,7 +58,8 @@ interface ChatApi {
     @POST
     suspend fun sendMessage(
         @Url url: String,
-        @Body request: SendMessageRequestDto
+        @Body request: SendMessageRequestDto,
+        @retrofit2.http.Tag fence: sk.uss.isac.chat.mobile.core.network.OutgoingSessionFence
     ): MessageDto
 
     @POST
@@ -74,7 +75,8 @@ interface ChatApi {
     @POST
     suspend fun uploadMessageAttachments(
         @Url url: String,
-        @Part files: List<MultipartBody.Part>
+        @Part files: List<MultipartBody.Part>,
+        @retrofit2.http.Tag fence: sk.uss.isac.chat.mobile.core.network.OutgoingSessionFence
     ): List<ChatAttachmentDto>
 
     @DELETE

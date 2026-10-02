@@ -51,6 +51,8 @@ import sk.uss.isac.chat.mobile.core.data.remote.UpdateConversationMembersRequest
 import sk.uss.isac.chat.mobile.core.data.remote.UpdateConversationRequestDto
 import sk.uss.isac.chat.mobile.core.network.ChatRealtimeClient
 import sk.uss.isac.chat.mobile.core.session.SessionStore
+import sk.uss.isac.chat.mobile.core.network.OutgoingSessionFence
+import sk.uss.isac.chat.mobile.core.network.OwnedPreviewLoader
 import sk.uss.isac.chat.mobile.core.session.UserSession
 
 class NetworkChatRepository(
@@ -272,9 +274,11 @@ class NetworkChatRepository(
     }
 
     override suspend fun sendMessage(conversationId: Long, body: String, visibilityScope: VisibilityScope): ChatMessage {
+        val captured = requireCurrentSession()
         return chatApi.sendMessage(
-            url("/chat/conversations/$conversationId/messages"),
-            SendMessageRequestDto(body = body, visibilityScope = visibilityScope.name)
+            captured.baseUrl.trimEnd('/') + "/chat/conversations/$conversationId/messages",
+            SendMessageRequestDto(body = body, visibilityScope = visibilityScope.name),
+            OutgoingSessionFence(captured)
         ).toDomain()
     }
 
@@ -282,6 +286,7 @@ class NetworkChatRepository(
         if (attachments.isEmpty()) {
             return
         }
+        val captured = requireCurrentSession()
         val parts = withContext(Dispatchers.IO) {
             attachments.map { attachment ->
                 val uri = Uri.parse(attachment.uri)
@@ -296,7 +301,7 @@ class NetworkChatRepository(
                 )
             }
         }
-        chatApi.uploadMessageAttachments(url("/chat/messages/$messageId/attachments"), parts)
+        chatApi.uploadMessageAttachments(captured.baseUrl.trimEnd('/') + "/chat/messages/$messageId/attachments", parts, OutgoingSessionFence(captured))
     }
 
     override suspend fun markMessageRead(messageId: Long) {
@@ -539,24 +544,10 @@ class NetworkChatRepository(
             return attachment
         }
         return withContext(Dispatchers.IO) {
-            val previewDir = File(appContext.cacheDir, "attachment-previews").apply { mkdirs() }
-            val targetFile = File(previewDir, "${attachment.id}-${sanitizeFileName(attachment.fileName)}.preview")
-            if (!targetFile.exists() || targetFile.length() == 0L) {
-                runCatching {
-                    val request = Request.Builder()
-                        .url(resolveUrl(attachment.previewUrl))
-                        .get()
-                        .build()
-                    okHttpClient.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            error("Preview download failed: ${response.code}")
-                        }
-                        val bytes = response.body?.bytes() ?: error("Preview response is empty")
-                        targetFile.writeBytes(bytes)
-                    }
-                }
-            }
-            attachment.copy(localPreviewPath = targetFile.takeIf { it.exists() && it.length() > 0 }?.absolutePath)
+            val path = OwnedPreviewLoader(File(appContext.cacheDir, "attachment-previews"), okHttpClient) {
+                currentSession()
+            }.load(resolveUrl(attachment.previewUrl), attachment.id)
+            attachment.copy(localPreviewPath = path)
         }
     }
 

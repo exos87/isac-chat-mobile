@@ -30,6 +30,7 @@ class SessionPasswordAuthenticator(
 
         val cookieJar = SessionCookieJar()
         val sessionClient = baseClient.newBuilder()
+            .apply { interceptors().clear(); networkInterceptors().clear() }
             .cookieJar(cookieJar)
             .build()
 
